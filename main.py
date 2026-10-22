@@ -4,7 +4,9 @@ import requests
 import re
 import sys
 import html
+import time
 from urllib.parse import urljoin
+from datetime import datetime, timezone, timedelta
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -19,7 +21,7 @@ RSS_FEEDS = [
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=fsb_official&format=Atom",
 ]
 
-# 👇 Подпись теперь ЖИРНАЯ (внутри тегов <b>)
+# Подпись (жирная)
 SIGNATURE = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
 
 THEMES = {
@@ -93,13 +95,29 @@ def is_theme_match(text, theme):
 
 def get_news_for_theme(theme):
     posted_links = get_posted_links()
+    # Текущее время в UTC
+    now = datetime.now(timezone.utc)
+    
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:20]:
+            for entry in feed.entries[:30]: # Расширили поиск до 30 новостей, но будем фильтровать по дате
                 link = entry.get("link", "")
                 if link in posted_links:
                     continue
+
+                # --- ПРОВЕРКА ДАТЫ НОВОСТИ ---
+                if hasattr(entry, 'published_parsed') and entry.published_parsed:
+                    pub_time = time.mktime(entry.published_parsed)
+                    pub_date = datetime.fromtimestamp(pub_time, timezone.utc)
+                    
+                    # Если новость старше 12 часов, пропускаем
+                    if now - pub_date > timedelta(hours=12):
+                        continue
+                else:
+                    # Если дата не указана (бывает в RSS-Bridge), пропускаем для безопасности
+                    continue
+                # -----------------------------
 
                 title = entry.get("title", "")
                 summary = entry.get("summary", entry.get("description", ""))
@@ -238,7 +256,7 @@ def main():
             else:
                 print(f"Не удалось опубликовать новость по теме {theme}. Пробуем следующую.")
         
-    print("Не удалось опубликовать новость. Пропускаем запуск.")
+    print("Не удалось найти свежие новости (моложе 12 часов) с медиа. Пропускаем запуск.")
     sys.exit(0)
 
 if __name__ == "__main__":
