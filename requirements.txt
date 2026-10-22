@@ -1,5 +1,2 @@
 feedparser
-google-generativeai
-python-telegram-bot
 requests
-python-dotenv
