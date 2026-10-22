@@ -2,20 +2,17 @@ import os
 import feedparser
 import requests
 
-# Ключи из «сейфа» GitHub Secrets (мы используем старое имя GEMINI_API_KEY, 
-# но внутри будет лежать ключ от OpenRouter)
-API_KEY = os.environ.get("GEMINI_API_KEY")
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")
+# Добавляем .strip(), чтобы убрать случайные невидимые пробелы или переносы строк
+API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
 
-# Источники новостей
 RSS_FEEDS = [
     "https://lenta.ru/rss/news",
     "https://ria.ru/export/rss2/archive/index.xml",
 ]
 
 def get_latest_news():
-    """Берёт первую попавшуюся свежую новость из списка RSS-лент."""
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
@@ -29,13 +26,16 @@ def get_latest_news():
     return None, None
 
 def rewrite_with_ai(title, summary):
-    """Переписывает новость через OpenRouter (бесплатная модель)."""
     url = "https://openrouter.ai/api/v1/chat/completions"
     
+    # --- ОТЛАДКА: Проверяем, что именно получил скрипт ---
+    print(f"DEBUG: Ключ начинается с -> {API_KEY[:10]}")
+    print(f"DEBUG: Длина ключа -> {len(API_KEY)}")
+
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/", # Техническое требование OpenRouter
+        "HTTP-Referer": "https://github.com/",
         "X-Title": "News Bot",
     }
 
@@ -48,7 +48,7 @@ def rewrite_with_ai(title, summary):
 """
     
     payload = {
-        "model": "qwen/qwen3.6-plus:free", # Бесплатная модель
+        "model": "qwen/qwen3.6-plus:free",
         "messages": [{"role": "user", "content": prompt}]
     }
     
@@ -58,7 +58,6 @@ def rewrite_with_ai(title, summary):
     return data["choices"][0]["message"]["content"]
 
 def send_to_telegram(text):
-    """Отправляет готовый пост в канал."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHANNEL_ID,
