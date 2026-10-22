@@ -4,53 +4,29 @@ import requests
 import re
 import sys
 
-# Ключи из GitHub Secrets
 API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
 
-# Источники новостей
 RSS_FEEDS = [
     "https://lenta.ru/rss/news",
     "https://ria.ru/export/rss2/archive/index.xml",
     "https://tass.ru/rss/v2.xml",
-    # Официальные каналы через RSS-Bridge
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=mchs_official&format=Atom",
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=mvd_official&format=Atom",
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=fsb_official&format=Atom",
 ]
 
-# Ваша подпись
 SIGNATURE = '<a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a>'
 
-# Расширенный список ключевых слов
 THEMES = {
-    "Политика": [
-        "политик", "власть", "кремль", "госдума", "президент", "путин", "правительство", "мишустин", 
-        "выборы", "санкции", "переговоры", "мид", "лавров", "песков", "законопроект", "депутат", 
-        "сенатор", "оппозиция", "протест", "нато", "сша", "европа", "брифинг", "саммит", "дипломат", "парламент"
-    ],
-    "СВО": [
-        "сво", "спецоперация", "специальная военная", "военный", "армия", "всу", "дрон", "бпла", 
-        "беспилотник", "ракета", "обстрел", "фронт", "мобилизация", "минобороны", "шойгу", "белоусов", 
-        "курск", "донбасс", "авдеевка", "артемовск", "бахмут", "херсон", "запорожье", "наступление", 
-        "штурм", "снаряд", "танк", "авиация", "пво", "боевик", "разведка"
-    ],
-    "Мигранты": [
-        "мигрант", "миграция", "иностранц", "приезж", "гражданство", "патент", "гастарбайтер", 
-        "диаспора", "депортация", "вид на жительство", "рвп", "квота", "трудовые ресурсы", "нелегал"
-    ],
-    "Происшествия": [
-        "происшеств", "авария", "дтп", "пожар", "взрыв", "чп", "катастрофа", "погиб", "пострадал", 
-        "крушение", "чрезвычайный", "преступление", "убийство", "теракт", "уголовное дело", "задержан", 
-        "суд", "следствие", "скорая", "спасатели", "мчс", "мвд", "фсб", "розыск", "эвакуация"
-    ]
+    "Политика": ["политик", "власть", "кремль", "госдума", "президент", "путин", "правительство", "мишустин", "выборы", "санкции", "переговоры", "мид", "лавров", "песков", "законопроект", "депутат", "сенатор", "оппозиция", "протест", "нато", "сша", "европа", "брифинг", "саммит", "дипломат", "парламент"],
+    "СВО": ["сво", "спецоперация", "специальная военная", "военный", "армия", "всу", "дрон", "бпла", "беспилотник", "ракета", "обстрел", "фронт", "мобилизация", "минобороны", "шойгу", "белоусов", "курск", "донбасс", "авдеевка", "артемовск", "бахмут", "херсон", "запорожье", "наступление", "штурм", "снаряд", "танк", "авиация", "пво", "боевик", "разведка"],
+    "Мигранты": ["мигрант", "миграция", "иностранц", "приезж", "гражданство", "патент", "гастарбайтер", "диаспора", "депортация", "вид на жительство", "рвп", "квота", "трудовые ресурсы", "нелегал"],
+    "Происшествия": ["происшеств", "авария", "дтп", "пожар", "взрыв", "чп", "катастрофа", "погиб", "пострадал", "крушение", "чрезвычайный", "преступление", "убийство", "теракт", "уголовное дело", "задержан", "суд", "следствие", "скорая", "спасатели", "мчс", "мвд", "фсб", "розыск", "эвакуация"]
 }
-
-# Порядок чередования тем
 THEME_ORDER = ["Политика", "СВО", "Мигранты", "Происшествия"]
 
-# --- ФУНКЦИИ СОХРАНЕНИЯ ПАМЯТИ БОТА ---
 def get_posted_links():
     if os.path.exists("posted_news.txt"):
         with open("posted_news.txt", "r", encoding="utf-8") as f:
@@ -70,36 +46,61 @@ def get_last_theme():
 def save_last_theme(theme):
     with open("last_theme.txt", "w", encoding="utf-8") as f:
         f.write(theme)
-# --------------------------------------
 
 def get_media_from_entry(entry):
-    """Ищет видео или картинку в записи RSS."""
+    """
+    Универсальный поиск медиа: enclosures, media_content, media_thumbnail, content.
+    """
+    # 1. Проверяем enclosures (как раньше)
     if 'enclosures' in entry:
         for enc in entry.enclosures:
             if 'video' in enc.get('type', ''):
                 return 'video', enc.get('href')
-    
+            if 'image' in enc.get('type', ''):
+                return 'image', enc.get('href')
+
+    # 2. Проверяем media_content (очень частый тег для картинок)
+    if 'media_content' in entry:
+        for media in entry.media_content:
+            if media.get('medium') == 'image' or 'image' in media.get('type', ''):
+                return 'image', media.get('url')
+            if media.get('medium') == 'video' or 'video' in media.get('type', ''):
+                return 'video', media.get('url')
+
+    # 3. Проверяем media_thumbnail (миниатюры)
+    if 'media_thumbnail' in entry:
+        for thumb in entry.media_thumbnail:
+            return 'image', thumb.get('url')
+
+    # 4. Проверяем полный HTML-контент на наличие <img>
+    if 'content' in entry:
+        for content_block in entry.content:
+            html_text = content_block.get('value', '')
+            img_match = re.search(r'<img[^>]+src="([^">]+)"', html_text)
+            if img_match:
+                return 'image', img_match.group(1)
+
+    # 5. Резервный поиск <img> в summary/description
     summary = entry.get('summary', entry.get('description', ''))
     img_match = re.search(r'<img[^>]+src="([^">]+)"', summary)
     if img_match:
         return 'image', img_match.group(1)
+
     return None, None
 
 def is_theme_match(text, theme):
-    """Проверяет текст на наличие ключевых слов."""
     text_lower = text.lower()
     return any(keyword in text_lower for keyword in THEMES[theme])
 
 def get_news_for_theme(theme):
-    """Ищет новость с медиа по заданной теме, исключая дубли."""
     posted_links = get_posted_links()
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:20]: # Проверяем 20 последних новостей
+            for entry in feed.entries[:20]:
                 link = entry.get("link", "")
                 if link in posted_links:
-                    continue # Пропускаем, если уже публиковали
+                    continue
 
                 title = entry.get("title", "")
                 summary = entry.get("summary", entry.get("description", ""))
@@ -107,7 +108,8 @@ def get_news_for_theme(theme):
                 
                 if is_theme_match(full_text, theme):
                     media_type, media_url = get_media_from_entry(entry)
-                    if media_type: 
+                    if media_type:
+                        # Очищаем текст от HTML для ИИ
                         summary_clean = re.sub(r'<[^>]+>', '', summary)
                         return title, summary_clean, media_type, media_url, link
         except Exception as e:
@@ -189,7 +191,7 @@ def main():
             post = rewrite_with_ai(title, summary, theme)
             send_to_telegram(post, media_type, media_url)
             save_last_theme(theme)
-            save_posted_link(news_link) # Запоминаем ссылку
+            save_posted_link(news_link)
             print(f"Опубликовано! Следующая тема: {theme}")
             return
         
