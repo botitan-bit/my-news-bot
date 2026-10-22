@@ -31,7 +31,6 @@ THEMES = {
 }
 THEME_ORDER = ["Политика", "СВО", "Мигранты", "Происшествия"]
 
-# Основная и запасная модели
 PRIMARY_MODEL = "qwen/qwen3.6-plus-preview:free"
 FALLBACK_MODEL = "openrouter/free"
 
@@ -96,6 +95,16 @@ def is_theme_match(text, theme):
             return True
     return False
 
+def is_old_news(title, summary):
+    current_year = datetime.now().year
+    text = f"{title} {summary}".lower()
+    
+    years = re.findall(r'\b(20\d{2})\b', text)
+    for year in years:
+        if int(year) < current_year:
+            return True
+    return False
+
 def get_news_candidates(theme):
     posted_links = get_posted_links()
     now = datetime.now(timezone.utc)
@@ -112,13 +121,19 @@ def get_news_candidates(theme):
                 if hasattr(entry, 'published_parsed') and entry.published_parsed:
                     pub_time = time.mktime(entry.published_parsed)
                     pub_date = datetime.fromtimestamp(pub_time, timezone.utc)
-                    if now - pub_date > timedelta(hours=12):
+                    # 👇 ТУТ ИЗМЕНЕНО НА 6 ЧАСОВ
+                    if now - pub_date > timedelta(hours=6):
                         continue
                 else:
                     continue
 
                 title = entry.get("title", "")
                 summary = entry.get("summary", entry.get("description", ""))
+                
+                if is_old_news(title, summary):
+                    print(f"Отсеяна старая новость (упоминание прошлых лет): {title}")
+                    continue
+
                 full_text = f"{title} {summary}"
                 
                 if is_theme_match(full_text, theme):
@@ -138,7 +153,6 @@ def get_news_candidates(theme):
             print(f"Ошибка чтения {feed_url}: {e}")
     return candidates
 
-# --- УМНАЯ ФУНКЦИЯ ЗАПРОСА К OPENROUTER С АВТОПЕРЕКЛЮЧЕНИЕМ ---
 def call_openrouter(prompt):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -148,7 +162,6 @@ def call_openrouter(prompt):
         "X-Title": "News Bot",
     }
     
-    # Пробуем сначала основную модель, потом запасную
     for model in [PRIMARY_MODEL, FALLBACK_MODEL]:
         payload = {"model": model, "messages": [{"role": "user", "content": prompt}]}
         try:
@@ -161,7 +174,6 @@ def call_openrouter(prompt):
             
     print("❌ Все доступные модели вернули ошибку.")
     return ""
-# -------------------------------------------------------------
 
 def pick_most_important(candidates):
     if not candidates:
@@ -184,7 +196,6 @@ def pick_most_important(candidates):
         if 0 <= idx < len(candidates):
             return candidates[idx]
             
-    # Если ИИ не смог ответить или ошибся, берем первого
     return candidates[0]
 
 def sanitize_html(text):
@@ -309,7 +320,7 @@ def main():
                     print(f"Опубликовано! Следующая тема: {theme}")
                     return
         
-    print("Не удалось найти подходящие свежие новости. Пропускаем запуск.")
+    print("Не удалось найти свежие новости (моложе 6 часов). Пропускаем запуск.")
     sys.exit(0)
 
 if __name__ == "__main__":
