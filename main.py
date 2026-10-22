@@ -19,6 +19,7 @@ RSS_FEEDS = [
 
 SIGNATURE = '<a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a>'
 
+# Расширенный список ключевых слов
 THEMES = {
     "Политика": ["политик", "власть", "кремль", "госдума", "президент", "путин", "правительство", "мишустин", "выборы", "санкции", "переговоры", "мид", "лавров", "песков", "законопроект", "депутат", "сенатор", "оппозиция", "протест", "нато", "сша", "европа", "брифинг", "саммит", "дипломат", "парламент"],
     "СВО": ["сво", "спецоперация", "специальная военная", "военный", "армия", "всу", "дрон", "бпла", "беспилотник", "ракета", "обстрел", "фронт", "мобилизация", "минобороны", "шойгу", "белоусов", "курск", "донбасс", "авдеевка", "артемовск", "бахмут", "херсон", "запорожье", "наступление", "штурм", "снаряд", "танк", "авиация", "пво", "боевик", "разведка"],
@@ -48,10 +49,6 @@ def save_last_theme(theme):
         f.write(theme)
 
 def get_media_from_entry(entry):
-    """
-    Универсальный поиск медиа: enclosures, media_content, media_thumbnail, content.
-    """
-    # 1. Проверяем enclosures (как раньше)
     if 'enclosures' in entry:
         for enc in entry.enclosures:
             if 'video' in enc.get('type', ''):
@@ -59,7 +56,6 @@ def get_media_from_entry(entry):
             if 'image' in enc.get('type', ''):
                 return 'image', enc.get('href')
 
-    # 2. Проверяем media_content (очень частый тег для картинок)
     if 'media_content' in entry:
         for media in entry.media_content:
             if media.get('medium') == 'image' or 'image' in media.get('type', ''):
@@ -67,12 +63,10 @@ def get_media_from_entry(entry):
             if media.get('medium') == 'video' or 'video' in media.get('type', ''):
                 return 'video', media.get('url')
 
-    # 3. Проверяем media_thumbnail (миниатюры)
     if 'media_thumbnail' in entry:
         for thumb in entry.media_thumbnail:
             return 'image', thumb.get('url')
 
-    # 4. Проверяем полный HTML-контент на наличие <img>
     if 'content' in entry:
         for content_block in entry.content:
             html_text = content_block.get('value', '')
@@ -80,7 +74,6 @@ def get_media_from_entry(entry):
             if img_match:
                 return 'image', img_match.group(1)
 
-    # 5. Резервный поиск <img> в summary/description
     summary = entry.get('summary', entry.get('description', ''))
     img_match = re.search(r'<img[^>]+src="([^">]+)"', summary)
     if img_match:
@@ -90,7 +83,11 @@ def get_media_from_entry(entry):
 
 def is_theme_match(text, theme):
     text_lower = text.lower()
-    return any(keyword in text_lower for keyword in THEMES[theme])
+    for keyword in THEMES[theme]:
+        # Ищем ключевое слово как отдельное слово (или начало слова), чтобы избежать "сво" в "свободы"
+        if re.search(r'\b' + re.escape(keyword), text_lower):
+            return True
+    return False
 
 def get_news_for_theme(theme):
     posted_links = get_posted_links()
@@ -108,10 +105,9 @@ def get_news_for_theme(theme):
                 
                 if is_theme_match(full_text, theme):
                     media_type, media_url = get_media_from_entry(entry)
-                    if media_type:
-                        # Очищаем текст от HTML для ИИ
-                        summary_clean = re.sub(r'<[^>]+>', '', summary)
-                        return title, summary_clean, media_type, media_url, link
+                    # Теперь мы берем новость, даже если нет медиа (отправим текстом)
+                    summary_clean = re.sub(r'<[^>]+>', '', summary)
+                    return title, summary_clean, media_type, media_url, link
         except Exception as e:
             print(f"Ошибка чтения {feed_url}: {e}")
     return None, None, None, None, None
@@ -160,16 +156,31 @@ def send_video(video_url, caption):
         return False
 
 def send_to_telegram(text, media_type, media_url):
+    # Пытаемся отправить видео
     if media_type == 'video' and media_url:
-        if send_video(media_url, text): return
-        print("Не удалось отправить видео. Пост отменен.")
+        if send_video(media_url, text): 
+            return True
+        print("Не удалось отправить видео. Пробуем текст.")
+        
+    # Пытаемся отправить фото
     elif media_type == 'image' and media_url:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         payload = {"chat_id": TELEGRAM_CHANNEL_ID, "photo": media_url, "caption": text, "parse_mode": "HTML"}
         try:
             requests.post(url, json=payload, timeout=30).raise_for_status()
-        except Exception:
-            print("Не удалось отправить фото. Пост отменен.")
+            return True
+        except Exception as e:
+            print(f"Не удалось отправить фото: {e}. Пробуем текст.")
+
+    # Резервный вариант: отправляем только текст (если нет медиа или оно не загрузилось)
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHANNEL_ID, "text": text, "parse_mode": "HTML"}
+    try:
+        requests.post(url, json=payload, timeout=30).raise_for_status()
+        return True
+    except Exception as e:
+        print(f"Критическая ошибка при отправке текста: {e}")
+        return False
 
 def main():
     last_theme = get_last_theme()
@@ -189,13 +200,19 @@ def main():
         if title:
             print(f"Найдена: {title}")
             post = rewrite_with_ai(title, summary, theme)
-            send_to_telegram(post, media_type, media_url)
-            save_last_theme(theme)
-            save_posted_link(news_link)
-            print(f"Опубликовано! Следующая тема: {theme}")
-            return
+            
+            # Отправляем и проверяем, ушло ли сообщение
+            success = send_to_telegram(post, media_type, media_url)
+            
+            if success:
+                save_last_theme(theme)
+                save_posted_link(news_link)
+                print(f"Опубликовано! Следующая тема: {theme}")
+                return
+            else:
+                print(f"Не удалось опубликовать новость по теме {theme}. Пробуем следующую.")
         
-    print("Не найдено новых новостей с медиа. Пропускаем.")
+    print("Не удалось опубликовать ни одну новость. Пропускаем запуск.")
     sys.exit(0)
 
 if __name__ == "__main__":
