@@ -3,6 +3,7 @@ import feedparser
 import requests
 import re
 import sys
+import html
 from urllib.parse import urljoin
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
@@ -18,7 +19,8 @@ RSS_FEEDS = [
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=fsb_official&format=Atom",
 ]
 
-SIGNATURE = '<a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a>'
+# 👇 Подпись теперь ЖИРНАЯ (внутри тегов <b>)
+SIGNATURE = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
 
 THEMES = {
     "Политика": ["политик", "власть", "кремль", "госдума", "президент", "путин", "правительство", "мишустин", "выборы", "санкции", "переговоры", "мид", "лавров", "песков", "законопроект", "депутат", "сенатор", "оппозиция", "протест", "нато", "сша", "европа", "брифинг", "саммит", "дипломат", "парламент"],
@@ -49,33 +51,27 @@ def save_last_theme(theme):
         f.write(theme)
 
 def get_media_from_entry(entry, feed_url):
-    # Ищем медиа и делаем ссылки абсолютными (добавляем https://...)
     if 'enclosures' in entry:
         for enc in entry.enclosures:
             url = enc.get('href', '')
             if url:
                 url = urljoin(feed_url, url)
-                if 'video' in enc.get('type', ''):
-                    return 'video', url
-                if 'image' in enc.get('type', ''):
-                    return 'image', url
+                if 'video' in enc.get('type', ''): return 'video', url
+                if 'image' in enc.get('type', ''): return 'image', url
 
     if 'media_content' in entry:
         for media in entry.media_content:
             url = media.get('url', '')
             if url:
                 url = urljoin(feed_url, url)
-                if media.get('medium') == 'image' or 'image' in media.get('type', ''):
-                    return 'image', url
-                if media.get('medium') == 'video' or 'video' in media.get('type', ''):
-                    return 'video', url
+                if media.get('medium') == 'image' or 'image' in media.get('type', ''): return 'image', url
+                if media.get('medium') == 'video' or 'video' in media.get('type', ''): return 'video', url
 
     if 'media_thumbnail' in entry:
         for thumb in entry.media_thumbnail:
             url = thumb.get('url', '')
             if url: return 'image', urljoin(feed_url, url)
 
-    # Ищем картинку в HTML
     html_to_search = ""
     if 'content' in entry:
         for content_block in entry.content:
@@ -117,6 +113,12 @@ def get_news_for_theme(theme):
             print(f"Ошибка чтения {feed_url}: {e}")
     return None, None, None, None, None
 
+def sanitize_html(text):
+    text = text.replace('<b>', '||BOLD_START||').replace('</b>', '||BOLD_END||')
+    text = html.escape(text)
+    text = text.replace('||BOLD_START||', '<b>').replace('||BOLD_END||', '</b>')
+    return text
+
 def rewrite_with_ai(title, summary, theme):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
@@ -139,7 +141,16 @@ def rewrite_with_ai(title, summary, theme):
     payload = {"model": "openrouter/free", "messages": [{"role": "user", "content": prompt}]}
     response = requests.post(url, headers=headers, json=payload, timeout=60)
     response.raise_for_status()
-    return f"{response.json()['choices'][0]['message']['content']}\n\n{SIGNATURE}"
+    
+    raw_text = response.json()['choices'][0]['message']['content'].strip()
+    
+    if not raw_text:
+        raw_text = f"<b>{title}</b>\n{summary}"
+        
+    raw_text = raw_text[:800]
+    safe_text = sanitize_html(raw_text)
+    
+    return f"{safe_text}\n\n{SIGNATURE}"
 
 def send_photo(photo_url, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
@@ -149,7 +160,6 @@ def send_photo(photo_url, caption):
         if r.status_code == 200: return True
     except: pass
     
-    # Если по ссылке не вышло, скачиваем и загружаем файлом
     try:
         img_data = requests.get(photo_url, timeout=60).content
         files = {'photo': ('image.jpg', img_data)}
@@ -178,16 +188,11 @@ def send_video(video_url, caption):
     return False
 
 def send_to_telegram(text, media_type, media_url):
-    # 1. Пытаемся отправить медиа
     if media_type == 'video' and media_url:
         if send_video(media_url, text): return True
-        print("Не удалось отправить видео.")
     elif media_type == 'image' and media_url:
         if send_photo(media_url, text): return True
-        print("Не удалось отправить фото.")
 
-    # 2. Если медиа нет или оно не отправилось, отправляем текст
-    # ВАЖНО: disable_web_page_preview=True убирает большую картинку канала из-под текста
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHANNEL_ID, 
@@ -196,11 +201,12 @@ def send_to_telegram(text, media_type, media_url):
         "disable_web_page_preview": True 
     }
     try:
-        requests.post(url, json=payload, timeout=30).raise_for_status()
-        return True
+        r = requests.post(url, json=payload, timeout=30)
+        if r.status_code == 200: return True
+        else: print(f"Ошибка отправки текста: {r.text}")
     except Exception as e:
-        print(f"Критическая ошибка при отправке текста: {e}")
-        return False
+        print(f"Критическая ошибка: {e}")
+    return False
 
 def main():
     last_theme = get_last_theme()
@@ -220,6 +226,8 @@ def main():
         if title:
             print(f"Найдена: {title}")
             post = rewrite_with_ai(title, summary, theme)
+            print(f"Сгенерированный текст:\n{post}\n")
+            
             success = send_to_telegram(post, media_type, media_url)
             
             if success:
@@ -227,6 +235,8 @@ def main():
                 save_posted_link(news_link)
                 print(f"Опубликовано! Следующая тема: {theme}")
                 return
+            else:
+                print(f"Не удалось опубликовать новость по теме {theme}. Пробуем следующую.")
         
     print("Не удалось опубликовать новость. Пропускаем запуск.")
     sys.exit(0)
