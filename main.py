@@ -2,7 +2,6 @@ import os
 import feedparser
 import requests
 
-# Добавляем .strip(), чтобы убрать случайные невидимые пробелы или переносы строк
 API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
@@ -28,10 +27,6 @@ def get_latest_news():
 def rewrite_with_ai(title, summary):
     url = "https://openrouter.ai/api/v1/chat/completions"
     
-    # --- ОТЛАДКА: Проверяем, что именно получил скрипт ---
-    print(f"DEBUG: Ключ начинается с -> {API_KEY[:10]}")
-    print(f"DEBUG: Длина ключа -> {len(API_KEY)}")
-
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json",
@@ -48,7 +43,7 @@ def rewrite_with_ai(title, summary):
 """
     
     payload = {
-        "model": "qwen/qwen3.6-plus:free",
+        "model": "openrouter/free",  # Используем авто-роутер бесплатных моделей
         "messages": [{"role": "user", "content": prompt}]
     }
     
