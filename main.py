@@ -4,30 +4,53 @@ import requests
 import re
 import sys
 
+# Ключи из GitHub Secrets
 API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
 
+# Источники новостей
 RSS_FEEDS = [
     "https://lenta.ru/rss/news",
     "https://ria.ru/export/rss2/archive/index.xml",
     "https://tass.ru/rss/v2.xml",
+    # Официальные каналы через RSS-Bridge
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=mchs_official&format=Atom",
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=mvd_official&format=Atom",
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=fsb_official&format=Atom",
 ]
 
+# Ваша подпись
 SIGNATURE = '<a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a>'
 
+# Расширенный список ключевых слов
 THEMES = {
-    "Политика": ["политик", "власть", "кремль", "госдума", "президент", "правительство", "выборы", "санкции", "переговоры", "мид"],
-    "СВО": ["сво", "специальная военная операция", "военный", "армия", "всу", "дрон", "бпла", "ракета", "обстрел", "фронт", "мобилизация", "минобороны"],
-    "Мигранты": ["мигрант", "миграция", "иностранц", "приезж", "гражданство", "патент", "гастарбайтер"],
-    "Происшествия": ["происшеств", "авария", "дтп", "пожар", "взрыв", "чп", "катастрофа", "погиб", "пострадал", "крушение", "чрезвычайный", "преступление"]
+    "Политика": [
+        "политик", "власть", "кремль", "госдума", "президент", "путин", "правительство", "мишустин", 
+        "выборы", "санкции", "переговоры", "мид", "лавров", "песков", "законопроект", "депутат", 
+        "сенатор", "оппозиция", "протест", "нато", "сша", "европа", "брифинг", "саммит", "дипломат", "парламент"
+    ],
+    "СВО": [
+        "сво", "спецоперация", "специальная военная", "военный", "армия", "всу", "дрон", "бпла", 
+        "беспилотник", "ракета", "обстрел", "фронт", "мобилизация", "минобороны", "шойгу", "белоусов", 
+        "курск", "донбасс", "авдеевка", "артемовск", "бахмут", "херсон", "запорожье", "наступление", 
+        "штурм", "снаряд", "танк", "авиация", "пво", "боевик", "разведка"
+    ],
+    "Мигранты": [
+        "мигрант", "миграция", "иностранц", "приезж", "гражданство", "патент", "гастарбайтер", 
+        "диаспора", "депортация", "вид на жительство", "рвп", "квота", "трудовые ресурсы", "нелегал"
+    ],
+    "Происшествия": [
+        "происшеств", "авария", "дтп", "пожар", "взрыв", "чп", "катастрофа", "погиб", "пострадал", 
+        "крушение", "чрезвычайный", "преступление", "убийство", "теракт", "уголовное дело", "задержан", 
+        "суд", "следствие", "скорая", "спасатели", "мчс", "мвд", "фсб", "розыск", "эвакуация"
+    ]
 }
+
+# Порядок чередования тем
 THEME_ORDER = ["Политика", "СВО", "Мигранты", "Происшествия"]
 
-# --- НОВЫЕ ФУНКЦИИ ДЛЯ ЗАЩИТЫ ОТ ДУБЛЕЙ ---
+# --- ФУНКЦИИ СОХРАНЕНИЯ ПАМЯТИ БОТА ---
 def get_posted_links():
     if os.path.exists("posted_news.txt"):
         with open("posted_news.txt", "r", encoding="utf-8") as f:
@@ -38,9 +61,19 @@ def save_posted_link(link):
     with open("posted_news.txt", "a", encoding="utf-8") as f:
         f.write(link + "\n")
 
-# --------------------------------------------
+def get_last_theme():
+    if os.path.exists("last_theme.txt"):
+        with open("last_theme.txt", "r", encoding="utf-8") as f:
+            return f.read().strip()
+    return THEME_ORDER[-1]
+
+def save_last_theme(theme):
+    with open("last_theme.txt", "w", encoding="utf-8") as f:
+        f.write(theme)
+# --------------------------------------
 
 def get_media_from_entry(entry):
+    """Ищет видео или картинку в записи RSS."""
     if 'enclosures' in entry:
         for enc in entry.enclosures:
             if 'video' in enc.get('type', ''):
@@ -53,19 +86,20 @@ def get_media_from_entry(entry):
     return None, None
 
 def is_theme_match(text, theme):
+    """Проверяет текст на наличие ключевых слов."""
     text_lower = text.lower()
     return any(keyword in text_lower for keyword in THEMES[theme])
 
 def get_news_for_theme(theme):
+    """Ищет новость с медиа по заданной теме, исключая дубли."""
     posted_links = get_posted_links()
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:20]:
-                # Проверяем, не публиковали ли мы уже эту новость
+            for entry in feed.entries[:20]: # Проверяем 20 последних новостей
                 link = entry.get("link", "")
                 if link in posted_links:
-                    continue 
+                    continue # Пропускаем, если уже публиковали
 
                 title = entry.get("title", "")
                 summary = entry.get("summary", entry.get("description", ""))
@@ -126,23 +160,14 @@ def send_video(video_url, caption):
 def send_to_telegram(text, media_type, media_url):
     if media_type == 'video' and media_url:
         if send_video(media_url, text): return
+        print("Не удалось отправить видео. Пост отменен.")
     elif media_type == 'image' and media_url:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         payload = {"chat_id": TELEGRAM_CHANNEL_ID, "photo": media_url, "caption": text, "parse_mode": "HTML"}
         try:
             requests.post(url, json=payload, timeout=30).raise_for_status()
         except Exception:
-            print("Не удалось отправить фото.")
-
-def get_last_theme():
-    if os.path.exists("last_theme.txt"):
-        with open("last_theme.txt", "r", encoding="utf-8") as f:
-            return f.read().strip()
-    return THEME_ORDER[-1]
-
-def save_last_theme(theme):
-    with open("last_theme.txt", "w", encoding="utf-8") as f:
-        f.write(theme)
+            print("Не удалось отправить фото. Пост отменен.")
 
 def main():
     last_theme = get_last_theme()
@@ -164,7 +189,7 @@ def main():
             post = rewrite_with_ai(title, summary, theme)
             send_to_telegram(post, media_type, media_url)
             save_last_theme(theme)
-            save_posted_link(news_link) # Сохраняем ссылку, чтобы не повторяться
+            save_posted_link(news_link) # Запоминаем ссылку
             print(f"Опубликовано! Следующая тема: {theme}")
             return
         
