@@ -3,6 +3,7 @@ import feedparser
 import requests
 import re
 import sys
+from urllib.parse import urljoin
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -19,7 +20,6 @@ RSS_FEEDS = [
 
 SIGNATURE = '<a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a>'
 
-# Расширенный список ключевых слов
 THEMES = {
     "Политика": ["политик", "власть", "кремль", "госдума", "президент", "путин", "правительство", "мишустин", "выборы", "санкции", "переговоры", "мид", "лавров", "песков", "законопроект", "депутат", "сенатор", "оппозиция", "протест", "нато", "сша", "европа", "брифинг", "саммит", "дипломат", "парламент"],
     "СВО": ["сво", "спецоперация", "специальная военная", "военный", "армия", "всу", "дрон", "бпла", "беспилотник", "ракета", "обстрел", "фронт", "мобилизация", "минобороны", "шойгу", "белоусов", "курск", "донбасс", "авдеевка", "артемовск", "бахмут", "херсон", "запорожье", "наступление", "штурм", "снаряд", "танк", "авиация", "пво", "боевик", "разведка"],
@@ -48,43 +48,49 @@ def save_last_theme(theme):
     with open("last_theme.txt", "w", encoding="utf-8") as f:
         f.write(theme)
 
-def get_media_from_entry(entry):
+def get_media_from_entry(entry, feed_url):
+    # Ищем медиа и делаем ссылки абсолютными (добавляем https://...)
     if 'enclosures' in entry:
         for enc in entry.enclosures:
-            if 'video' in enc.get('type', ''):
-                return 'video', enc.get('href')
-            if 'image' in enc.get('type', ''):
-                return 'image', enc.get('href')
+            url = enc.get('href', '')
+            if url:
+                url = urljoin(feed_url, url)
+                if 'video' in enc.get('type', ''):
+                    return 'video', url
+                if 'image' in enc.get('type', ''):
+                    return 'image', url
 
     if 'media_content' in entry:
         for media in entry.media_content:
-            if media.get('medium') == 'image' or 'image' in media.get('type', ''):
-                return 'image', media.get('url')
-            if media.get('medium') == 'video' or 'video' in media.get('type', ''):
-                return 'video', media.get('url')
+            url = media.get('url', '')
+            if url:
+                url = urljoin(feed_url, url)
+                if media.get('medium') == 'image' or 'image' in media.get('type', ''):
+                    return 'image', url
+                if media.get('medium') == 'video' or 'video' in media.get('type', ''):
+                    return 'video', url
 
     if 'media_thumbnail' in entry:
         for thumb in entry.media_thumbnail:
-            return 'image', thumb.get('url')
+            url = thumb.get('url', '')
+            if url: return 'image', urljoin(feed_url, url)
 
+    # Ищем картинку в HTML
+    html_to_search = ""
     if 'content' in entry:
         for content_block in entry.content:
-            html_text = content_block.get('value', '')
-            img_match = re.search(r'<img[^>]+src="([^">]+)"', html_text)
-            if img_match:
-                return 'image', img_match.group(1)
+            html_to_search += content_block.get('value', '')
+    html_to_search += entry.get('summary', entry.get('description', ''))
 
-    summary = entry.get('summary', entry.get('description', ''))
-    img_match = re.search(r'<img[^>]+src="([^">]+)"', summary)
+    img_match = re.search(r'<img[^>]+src="([^">]+)"', html_to_search)
     if img_match:
-        return 'image', img_match.group(1)
+        return 'image', urljoin(feed_url, img_match.group(1))
 
     return None, None
 
 def is_theme_match(text, theme):
     text_lower = text.lower()
     for keyword in THEMES[theme]:
-        # Ищем ключевое слово как отдельное слово (или начало слова), чтобы избежать "сво" в "свободы"
         if re.search(r'\b' + re.escape(keyword), text_lower):
             return True
     return False
@@ -104,8 +110,7 @@ def get_news_for_theme(theme):
                 full_text = f"{title} {summary}"
                 
                 if is_theme_match(full_text, theme):
-                    media_type, media_url = get_media_from_entry(entry)
-                    # Теперь мы берем новость, даже если нет медиа (отправим текстом)
+                    media_type, media_url = get_media_from_entry(entry, feed_url)
                     summary_clean = re.sub(r'<[^>]+>', '', summary)
                     return title, summary_clean, media_type, media_url, link
         except Exception as e:
@@ -136,45 +141,60 @@ def rewrite_with_ai(title, summary, theme):
     response.raise_for_status()
     return f"{response.json()['choices'][0]['message']['content']}\n\n{SIGNATURE}"
 
+def send_photo(photo_url, caption):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    payload = {"chat_id": TELEGRAM_CHANNEL_ID, "photo": photo_url, "caption": caption, "parse_mode": "HTML"}
+    try:
+        r = requests.post(url, json=payload, timeout=30)
+        if r.status_code == 200: return True
+    except: pass
+    
+    # Если по ссылке не вышло, скачиваем и загружаем файлом
+    try:
+        img_data = requests.get(photo_url, timeout=60).content
+        files = {'photo': ('image.jpg', img_data)}
+        data = {"chat_id": TELEGRAM_CHANNEL_ID, "caption": caption, "parse_mode": "HTML"}
+        r = requests.post(url, data=data, files=files, timeout=60)
+        if r.status_code == 200: return True
+    except: pass
+    return False
+
 def send_video(video_url, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
     payload = {"chat_id": TELEGRAM_CHANNEL_ID, "video": video_url, "caption": caption, "parse_mode": "HTML", "supports_streaming": True}
     try:
-        requests.post(url, json=payload, timeout=30).raise_for_status()
-        return True
-    except requests.exceptions.HTTPError:
-        pass
+        r = requests.post(url, json=payload, timeout=30)
+        if r.status_code == 200: return True
+    except: pass
     
     try:
         video_data = requests.get(video_url, timeout=60).content
         if len(video_data) > 50 * 1024 * 1024: return False
         files = {'video': ('video.mp4', video_data)}
         data = {"chat_id": TELEGRAM_CHANNEL_ID, "caption": caption, "parse_mode": "HTML", "supports_streaming": True}
-        requests.post(url, data=data, files=files, timeout=60).raise_for_status()
-        return True
-    except Exception:
-        return False
+        r = requests.post(url, data=data, files=files, timeout=60)
+        if r.status_code == 200: return True
+    except: pass
+    return False
 
 def send_to_telegram(text, media_type, media_url):
-    # Пытаемся отправить видео
+    # 1. Пытаемся отправить медиа
     if media_type == 'video' and media_url:
-        if send_video(media_url, text): 
-            return True
-        print("Не удалось отправить видео. Пробуем текст.")
-        
-    # Пытаемся отправить фото
+        if send_video(media_url, text): return True
+        print("Не удалось отправить видео.")
     elif media_type == 'image' and media_url:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-        payload = {"chat_id": TELEGRAM_CHANNEL_ID, "photo": media_url, "caption": text, "parse_mode": "HTML"}
-        try:
-            requests.post(url, json=payload, timeout=30).raise_for_status()
-            return True
-        except Exception as e:
-            print(f"Не удалось отправить фото: {e}. Пробуем текст.")
+        if send_photo(media_url, text): return True
+        print("Не удалось отправить фото.")
 
-    # Резервный вариант: отправляем только текст (если нет медиа или оно не загрузилось)
+    # 2. Если медиа нет или оно не отправилось, отправляем текст
+    # ВАЖНО: disable_web_page_preview=True убирает большую картинку канала из-под текста
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHANNEL_ID, "text": text, "parse_mode": "HTML"}
+    payload = {
+        "chat_id": TELEGRAM_CHANNEL_ID, 
+        "text": text, 
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True 
+    }
     try:
         requests.post(url, json=payload, timeout=30).raise_for_status()
         return True
@@ -200,8 +220,6 @@ def main():
         if title:
             print(f"Найдена: {title}")
             post = rewrite_with_ai(title, summary, theme)
-            
-            # Отправляем и проверяем, ушло ли сообщение
             success = send_to_telegram(post, media_type, media_url)
             
             if success:
@@ -209,10 +227,8 @@ def main():
                 save_posted_link(news_link)
                 print(f"Опубликовано! Следующая тема: {theme}")
                 return
-            else:
-                print(f"Не удалось опубликовать новость по теме {theme}. Пробуем следующую.")
         
-    print("Не удалось опубликовать ни одну новость. Пропускаем запуск.")
+    print("Не удалось опубликовать новость. Пропускаем запуск.")
     sys.exit(0)
 
 if __name__ == "__main__":
