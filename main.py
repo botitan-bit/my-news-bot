@@ -31,10 +31,14 @@ def get_latest_news():
 
 def rewrite_with_gemini(title, summary):
     """Переписывает новость через Gemini."""
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    )
+    # --- ИЗМЕНЕНИЕ: Убираем ключ из URL и добавляем заголовок ---
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+    
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY,
+    }
+
     prompt = f"""Ты — редактор новостного Telegram-канала.
 Перепиши новость кратко, живым языком, до 500 символов.
 Добавь 1-2 эмодзи в начало. Дай только готовый пост, без пояснений.
@@ -43,7 +47,9 @@ def rewrite_with_gemini(title, summary):
 Текст: {summary}
 """
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    response = requests.post(url, json=payload, timeout=60)
+    
+    # --- ИЗМЕНЕНИЕ: Передаем заголовки в запросе ---
+    response = requests.post(url, headers=headers, json=payload, timeout=60)
     response.raise_for_status()
     data = response.json()
     return data["candidates"][0]["content"]["parts"][0]["text"]
