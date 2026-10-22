@@ -19,8 +19,8 @@ RSS_FEEDS = [
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=fsb_official&format=Atom",
 ]
 
-# 👇 ВАША ПОДПИСЬ (ссылка уже вставлена)
-SIGNATURE = '<a href="https://t.me/pervonovosti">👉 Первый новостной</a>'
+# 👇 ВАША ПОДПИСЬ (только текст со вшитой ссылкой, без эмодзи)
+SIGNATURE = '<a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a>'
 
 # 👇 ТЕМЫ И КЛЮЧЕВЫЕ СЛОВА
 THEMES = {
