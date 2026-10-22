@@ -5,7 +5,6 @@ import re
 import sys
 import html
 import time
-import json
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
 
@@ -94,7 +93,6 @@ def is_theme_match(text, theme):
     return False
 
 def get_news_candidates(theme):
-    """Собирает до 5 кандидатов с медиа, подходящих по теме и свежести."""
     posted_links = get_posted_links()
     now = datetime.now(timezone.utc)
     candidates = []
@@ -121,7 +119,7 @@ def get_news_candidates(theme):
                 
                 if is_theme_match(full_text, theme):
                     media_type, media_url = get_media_from_entry(entry, feed_url)
-                    if media_type: # Берем только с медиа
+                    if media_type:
                         summary_clean = re.sub(r'<[^>]+>', '', summary)
                         candidates.append({
                             "title": title,
@@ -130,14 +128,13 @@ def get_news_candidates(theme):
                             "media_url": media_url,
                             "link": link
                         })
-                        if len(candidates) >= 5: # Останавливаемся, когда набрали 5 штук
+                        if len(candidates) >= 5:
                             return candidates
         except Exception as e:
             print(f"Ошибка чтения {feed_url}: {e}")
     return candidates
 
 def pick_most_important(candidates):
-    """Отправляет заголовки ИИ, чтобы он выбрал самую важную новость."""
     if not candidates:
         return None
     
@@ -150,6 +147,7 @@ def pick_most_important(candidates):
         "HTTP-Referer": "https://github.com/",
         "X-Title": "News Bot",
     }
+    # Жестко задаем модель Qwen для выбора важности
     prompt = f"""Ты — главный редактор новостного канала.
 Вот список заголовков новостей:
 {titles_list}
@@ -158,13 +156,12 @@ def pick_most_important(candidates):
 Игнорируй мелкие бытовые происшествия, желтуху, шоу-бизнес и незначительные события.
 Ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}), без лишних слов."""
     
-    payload = {"model": "openrouter/free", "messages": [{"role": "user", "content": prompt}]}
+    payload = {"model": "qwen/qwen3.6-plus:free", "messages": [{"role": "user", "content": prompt}]}
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=60)
         response.raise_for_status()
         answer = response.json()['choices'][0]['message']['content'].strip()
         
-        # Ищем цифру в ответе
         match = re.search(r'\d+', answer)
         if match:
             idx = int(match.group())
@@ -173,7 +170,6 @@ def pick_most_important(candidates):
     except Exception as e:
         print(f"Ошибка при выборе важности: {e}")
     
-    # Если ИИ ошибся, берем первого кандидата
     return candidates[0]
 
 def sanitize_html(text):
@@ -190,25 +186,34 @@ def rewrite_with_ai(title, summary, theme):
         "HTTP-Referer": "https://github.com/",
         "X-Title": "News Bot",
     }
-    prompt = f"""Ты — редактор новостного Telegram-канала.
-Перепиши новость кратко, живым языком, до 400 символов.
-Начни пост с заголовка, обернув его в HTML-тег <b>...</b>.
-Затем добавь 1-2 эмодзи и краткий текст новости.
-Рубрика новости: {theme}.
-Не используй другие HTML-теги, кроме <b>.
-Дай только готовый пост, без пояснений.
+    # Жестко задаем модель Qwen и требуем строгий формат
+    prompt = f"""Ты — профессиональный, строгий редактор крупного новостного Telegram-канала.
+Перепиши новость информативно, литературным русским языком, без сленга и желтухи.
+Исправь грамматические и фактические ошибки исходного текста (например, если в исходнике опечатка "Убеб", напиши "Узбек").
+Будь деликатен. Не используй вульгарные или нецензурные выражения.
 
+Требования к посту:
+1. Начни с краткого и понятного заголовка, обернутого в HTML-тег <b>...</b>. Без кликбейта.
+2. После закрывающего тега </b> ОБЯЗАТЕЛЬНО сделай ДВА переноса строки (оставь пустую строку).
+3. Затем добавь 1-2 уместных эмодзи и краткий текст новости (суть, факты).
+4. Объем текста — до 400 символов.
+5. Дай только готовый пост, без твоих комментариев и вступлений.
+
+Рубрика: {theme}
 Заголовок: {title}
 Текст: {summary}
 """
-    payload = {"model": "openrouter/free", "messages": [{"role": "user", "content": prompt}]}
+    payload = {"model": "qwen/qwen3.6-plus:free", "messages": [{"role": "user", "content": prompt}]}
     response = requests.post(url, headers=headers, json=payload, timeout=60)
     response.raise_for_status()
     
     raw_text = response.json()['choices'][0]['message']['content'].strip()
     
     if not raw_text:
-        raw_text = f"<b>{title}</b>\n{summary}"
+        raw_text = f"<b>{title}</b>\n\n{summary}"
+        
+    # ПРИНУДИТЕЛЬНОЕ ФОРМАТИРОВАНИЕ: ставим 2 переноса строки после </b>, если ИИ забыл
+    raw_text = re.sub(r'</b>\s*', '</b>\n\n', raw_text)
         
     raw_text = raw_text[:800]
     safe_text = sanitize_html(raw_text)
@@ -293,6 +298,7 @@ def main():
             if best_news:
                 print(f"ИИ выбрал самую важную: {best_news['title']}")
                 post = rewrite_with_ai(best_news['title'], best_news['summary'], theme)
+                print(f"Сгенерированный текст:\n{post}\n")
                 
                 success = send_to_telegram(post, best_news['media_type'], best_news['media_url'])
                 
