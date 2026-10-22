@@ -5,6 +5,7 @@ import re
 import sys
 import html
 import time
+import json
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
 
@@ -21,7 +22,6 @@ RSS_FEEDS = [
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=fsb_official&format=Atom",
 ]
 
-# Подпись (жирная)
 SIGNATURE = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
 
 THEMES = {
@@ -93,31 +93,27 @@ def is_theme_match(text, theme):
             return True
     return False
 
-def get_news_for_theme(theme):
+def get_news_candidates(theme):
+    """Собирает до 5 кандидатов с медиа, подходящих по теме и свежести."""
     posted_links = get_posted_links()
-    # Текущее время в UTC
     now = datetime.now(timezone.utc)
+    candidates = []
     
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:30]: # Расширили поиск до 30 новостей, но будем фильтровать по дате
+            for entry in feed.entries[:30]:
                 link = entry.get("link", "")
                 if link in posted_links:
                     continue
 
-                # --- ПРОВЕРКА ДАТЫ НОВОСТИ ---
                 if hasattr(entry, 'published_parsed') and entry.published_parsed:
                     pub_time = time.mktime(entry.published_parsed)
                     pub_date = datetime.fromtimestamp(pub_time, timezone.utc)
-                    
-                    # Если новость старше 12 часов, пропускаем
                     if now - pub_date > timedelta(hours=12):
                         continue
                 else:
-                    # Если дата не указана (бывает в RSS-Bridge), пропускаем для безопасности
                     continue
-                # -----------------------------
 
                 title = entry.get("title", "")
                 summary = entry.get("summary", entry.get("description", ""))
@@ -125,11 +121,60 @@ def get_news_for_theme(theme):
                 
                 if is_theme_match(full_text, theme):
                     media_type, media_url = get_media_from_entry(entry, feed_url)
-                    summary_clean = re.sub(r'<[^>]+>', '', summary)
-                    return title, summary_clean, media_type, media_url, link
+                    if media_type: # Берем только с медиа
+                        summary_clean = re.sub(r'<[^>]+>', '', summary)
+                        candidates.append({
+                            "title": title,
+                            "summary": summary_clean,
+                            "media_type": media_type,
+                            "media_url": media_url,
+                            "link": link
+                        })
+                        if len(candidates) >= 5: # Останавливаемся, когда набрали 5 штук
+                            return candidates
         except Exception as e:
             print(f"Ошибка чтения {feed_url}: {e}")
-    return None, None, None, None, None
+    return candidates
+
+def pick_most_important(candidates):
+    """Отправляет заголовки ИИ, чтобы он выбрал самую важную новость."""
+    if not candidates:
+        return None
+    
+    titles_list = "\n".join([f"{i}. {c['title']}" for i, c in enumerate(candidates)])
+    
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/",
+        "X-Title": "News Bot",
+    }
+    prompt = f"""Ты — главный редактор новостного канала.
+Вот список заголовков новостей:
+{titles_list}
+
+Выбери ОДИН самый важный, значимый и интересный для страны/мира заголовок. 
+Игнорируй мелкие бытовые происшествия, желтуху, шоу-бизнес и незначительные события.
+Ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}), без лишних слов."""
+    
+    payload = {"model": "openrouter/free", "messages": [{"role": "user", "content": prompt}]}
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
+        response.raise_for_status()
+        answer = response.json()['choices'][0]['message']['content'].strip()
+        
+        # Ищем цифру в ответе
+        match = re.search(r'\d+', answer)
+        if match:
+            idx = int(match.group())
+            if 0 <= idx < len(candidates):
+                return candidates[idx]
+    except Exception as e:
+        print(f"Ошибка при выборе важности: {e}")
+    
+    # Если ИИ ошибся, берем первого кандидата
+    return candidates[0]
 
 def sanitize_html(text):
     text = text.replace('<b>', '||BOLD_START||').replace('</b>', '||BOLD_END||')
@@ -238,25 +283,26 @@ def main():
         current_index = (next_index + i) % len(THEME_ORDER)
         theme = THEME_ORDER[current_index]
         
-        print(f"Ищем новость по теме: {theme}")
-        title, summary, media_type, media_url, news_link = get_news_for_theme(theme)
+        print(f"Ищем кандидатов по теме: {theme}")
+        candidates = get_news_candidates(theme)
         
-        if title:
-            print(f"Найдена: {title}")
-            post = rewrite_with_ai(title, summary, theme)
-            print(f"Сгенерированный текст:\n{post}\n")
+        if candidates:
+            print(f"Найдено {len(candidates)} кандидатов. Отправляем ИИ на оценку важности...")
+            best_news = pick_most_important(candidates)
             
-            success = send_to_telegram(post, media_type, media_url)
-            
-            if success:
-                save_last_theme(theme)
-                save_posted_link(news_link)
-                print(f"Опубликовано! Следующая тема: {theme}")
-                return
-            else:
-                print(f"Не удалось опубликовать новость по теме {theme}. Пробуем следующую.")
+            if best_news:
+                print(f"ИИ выбрал самую важную: {best_news['title']}")
+                post = rewrite_with_ai(best_news['title'], best_news['summary'], theme)
+                
+                success = send_to_telegram(post, best_news['media_type'], best_news['media_url'])
+                
+                if success:
+                    save_last_theme(theme)
+                    save_posted_link(best_news['link'])
+                    print(f"Опубликовано! Следующая тема: {theme}")
+                    return
         
-    print("Не удалось найти свежие новости (моложе 12 часов) с медиа. Пропускаем запуск.")
+    print("Не удалось найти подходящие свежие новости. Пропускаем запуск.")
     sys.exit(0)
 
 if __name__ == "__main__":
