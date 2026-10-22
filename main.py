@@ -31,6 +31,10 @@ THEMES = {
 }
 THEME_ORDER = ["Политика", "СВО", "Мигранты", "Происшествия"]
 
+# Основная и запасная модели
+PRIMARY_MODEL = "qwen/qwen3.6-plus-preview:free"
+FALLBACK_MODEL = "openrouter/free"
+
 def get_posted_links():
     if os.path.exists("posted_news.txt"):
         with open("posted_news.txt", "r", encoding="utf-8") as f:
@@ -134,12 +138,8 @@ def get_news_candidates(theme):
             print(f"Ошибка чтения {feed_url}: {e}")
     return candidates
 
-def pick_most_important(candidates):
-    if not candidates:
-        return None
-    
-    titles_list = "\n".join([f"{i}. {c['title']}" for i, c in enumerate(candidates)])
-    
+# --- УМНАЯ ФУНКЦИЯ ЗАПРОСА К OPENROUTER С АВТОПЕРЕКЛЮЧЕНИЕМ ---
+def call_openrouter(prompt):
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {API_KEY}",
@@ -147,7 +147,28 @@ def pick_most_important(candidates):
         "HTTP-Referer": "https://github.com/",
         "X-Title": "News Bot",
     }
-    # Жестко задаем модель Qwen для выбора важности
+    
+    # Пробуем сначала основную модель, потом запасную
+    for model in [PRIMARY_MODEL, FALLBACK_MODEL]:
+        payload = {"model": model, "messages": [{"role": "user", "content": prompt}]}
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+            response.raise_for_status()
+            return response.json()['choices'][0]['message']['content'].strip()
+        except Exception as e:
+            print(f"⚠️ Ошибка при использовании модели {model}: {e}")
+            print("🔄 Пробуем следующую модель...")
+            
+    print("❌ Все доступные модели вернули ошибку.")
+    return ""
+# -------------------------------------------------------------
+
+def pick_most_important(candidates):
+    if not candidates:
+        return None
+    
+    titles_list = "\n".join([f"{i}. {c['title']}" for i, c in enumerate(candidates)])
+    
     prompt = f"""Ты — главный редактор новостного канала.
 Вот список заголовков новостей:
 {titles_list}
@@ -156,20 +177,14 @@ def pick_most_important(candidates):
 Игнорируй мелкие бытовые происшествия, желтуху, шоу-бизнес и незначительные события.
 Ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}), без лишних слов."""
     
-    payload = {"model": "qwen/qwen3.6-plus:free", "messages": [{"role": "user", "content": prompt}]}
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=60)
-        response.raise_for_status()
-        answer = response.json()['choices'][0]['message']['content'].strip()
-        
-        match = re.search(r'\d+', answer)
-        if match:
-            idx = int(match.group())
-            if 0 <= idx < len(candidates):
-                return candidates[idx]
-    except Exception as e:
-        print(f"Ошибка при выборе важности: {e}")
-    
+    answer = call_openrouter(prompt)
+    match = re.search(r'\d+', answer)
+    if match:
+        idx = int(match.group())
+        if 0 <= idx < len(candidates):
+            return candidates[idx]
+            
+    # Если ИИ не смог ответить или ошибся, берем первого
     return candidates[0]
 
 def sanitize_html(text):
@@ -179,17 +194,9 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/",
-        "X-Title": "News Bot",
-    }
-    # Жестко задаем модель Qwen и требуем строгий формат
     prompt = f"""Ты — профессиональный, строгий редактор крупного новостного Telegram-канала.
 Перепиши новость информативно, литературным русским языком, без сленга и желтухи.
-Исправь грамматические и фактические ошибки исходного текста (например, если в исходнике опечатка "Убеб", напиши "Узбек").
+Исправь грамматические и фактические ошибки исходного текста.
 Будь деликатен. Не используй вульгарные или нецензурные выражения.
 
 Требования к посту:
@@ -203,18 +210,12 @@ def rewrite_with_ai(title, summary, theme):
 Заголовок: {title}
 Текст: {summary}
 """
-    payload = {"model": "qwen/qwen3.6-plus:free", "messages": [{"role": "user", "content": prompt}]}
-    response = requests.post(url, headers=headers, json=payload, timeout=60)
-    response.raise_for_status()
-    
-    raw_text = response.json()['choices'][0]['message']['content'].strip()
+    raw_text = call_openrouter(prompt)
     
     if not raw_text:
         raw_text = f"<b>{title}</b>\n\n{summary}"
         
-    # ПРИНУДИТЕЛЬНОЕ ФОРМАТИРОВАНИЕ: ставим 2 переноса строки после </b>, если ИИ забыл
     raw_text = re.sub(r'</b>\s*', '</b>\n\n', raw_text)
-        
     raw_text = raw_text[:800]
     safe_text = sanitize_html(raw_text)
     
