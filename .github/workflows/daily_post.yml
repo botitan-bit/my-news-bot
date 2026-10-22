@@ -2,7 +2,7 @@ name: Daily Telegram Post
 
 on:
   schedule:
-    - cron: '30 9 * * *'
+    - cron: '0 */4 * * *'
   workflow_dispatch:
   push:
     branches: [ main ]
