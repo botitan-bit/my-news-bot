@@ -12,6 +12,8 @@ from vk_api.upload import VkUpload
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
 
+# 👇 ПРИНУДИТЕЛЬНЫЙ ВЫВОД ЛОГОВ (чтобы не было пустых логов)
+sys.stdout.reconfigure(line_buffering=True)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
@@ -212,7 +214,6 @@ def call_groq(prompt):
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json",
     }
-    # 👇 АКТУАЛЬНАЯ МОДЕЛЬ GROQ
     payload = {"model": "openai/gpt-oss-120b", "messages": [{"role": "user", "content": prompt}]}
     
     try:
@@ -262,7 +263,6 @@ def rewrite_with_ai(title, summary, theme):
     
     if not raw_text:
         print("⚠️ ИИ недоступен. Применяем страховку (сырой текст).")
-        # 👇 ОЧИЩАЕМ ЗАГОЛОВОК ОТ ТЕГОВ ПЕРЕД СТРАХОВКОЙ
         clean_title = re.sub(r'<[^>]+>', '', title).strip()
         clean_summary = summary.strip()
         if len(clean_summary) > 600: clean_summary = clean_summary[:600] + "..."
@@ -277,4 +277,153 @@ def rewrite_with_ai(title, summary, theme):
     raw_text = raw_text[:900]
     
     return sanitize_html(raw_text)
-# ... (остальные функции send_photo, send_video, send_to_telegram, send_to_vk, send_to_max и main остаются без изменений)
+
+def send_photo(photo_url, caption):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+    payload = {"chat_id": TELEGRAM_CHANNEL_ID, "photo": photo_url, "caption": caption, "parse_mode": "HTML"}
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        if r.status_code == 200: return True
+    except: pass
+    try:
+        img_data = requests.get(photo_url, timeout=10).content
+        files = {'photo': ('image.jpg', img_data)}
+        data = {"chat_id": TELEGRAM_CHANNEL_ID, "caption": caption, "parse_mode": "HTML"}
+        r = requests.post(url, data=data, files=files, timeout=15)
+        if r.status_code == 200: return True
+    except: pass
+    return False
+
+def send_video(video_url, caption):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
+    payload = {"chat_id": TELEGRAM_CHANNEL_ID, "video": video_url, "caption": caption, "parse_mode": "HTML", "supports_streaming": True}
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        if r.status_code == 200: return True
+    except: pass
+    try:
+        video_data = requests.get(video_url, timeout=10).content
+        if len(video_data) > 50 * 1024 * 1024: return False
+        files = {'video': ('video.mp4', video_data)}
+        data = {"chat_id": TELEGRAM_CHANNEL_ID, "caption": caption, "parse_mode": "HTML", "supports_streaming": True}
+        r = requests.post(url, data=data, files=files, timeout=15)
+        if r.status_code == 200: return True
+    except: pass
+    return False
+
+def send_to_telegram(text, media_type, media_url):
+    full_text = f"{text}\n\n{SIGNATURE}"
+    if media_type == 'video' and media_url:
+        if send_video(media_url, full_text): return True
+    elif media_type == 'image' and media_url:
+        if send_photo(media_url, full_text): return True
+        
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHANNEL_ID, "text": full_text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    try:
+        r = requests.post(url, json=payload, timeout=10)
+        if r.status_code == 200: return True
+    except: pass
+    return False
+
+def send_to_vk(text, media_type, media_url):
+    if not VK_TOKEN or not VK_GROUP_ID: return False
+        
+    print("Отправляем пост во ВКонтакте...")
+    clean_text = re.sub(r'<[^>]+>', '', text)
+    clean_text = html.unescape(clean_text).strip()
+    
+    try:
+        vk_session = vk_api.VkApi(token=VK_TOKEN)
+        vk = vk_session.get_api()
+        attachments = ""
+        
+        if POST_PHOTO_TO_VK and media_type == 'image' and media_url:
+            try:
+                img_data = requests.get(media_url, timeout=10).content
+                upload = VkUpload(vk_session)
+                photo = upload.photo_wall(io.BytesIO(img_data), group_id=int(VK_GROUP_ID))[0]
+                attachments = f"photo{photo['owner_id']}_{photo['id']}"
+            except Exception as e:
+                print(f"ВК: Ошибка загрузки фото -> {e}. Постим только текст.")
+        
+        vk.wall.post(owner_id=f"-{VK_GROUP_ID}", message=clean_text, attachments=attachments, from_group=1)
+        print("✅ ВК: Успешно опубликовано!")
+        return True
+    except Exception as e:
+        print(f"❌ ВК Ошибка: {e}")
+        return False
+
+def send_to_max(text, media_type, media_url):
+    if not MAX_BOT_TOKEN or not MAX_CHANNEL_ID: return False
+        
+    print("Отправляем пост в MAX...")
+    clean_text = text.replace('<b>', '**').replace('</b>', '**')
+    clean_text = html.unescape(clean_text).strip()
+    
+    url = f"https://platform-api2.max.ru/messages?chat_id={MAX_CHANNEL_ID}"
+    headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
+    
+    attachments = []
+    if media_type == 'image' and media_url:
+        attachments.append({"type": "image", "payload": {"url": media_url}})
+    
+    payload = {"text": clean_text, "format": "markdown"}
+    if attachments: payload["attachments"] = attachments
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=10, verify=False)
+        response.raise_for_status()
+        print("✅ MAX: Успешно опубликовано!")
+        return True
+    except Exception as e:
+        print(f"❌ MAX Ошибка: {e}")
+        return False
+
+def main():
+    last_theme = get_last_theme()
+    try:
+        last_index = THEME_ORDER.index(last_theme)
+    except ValueError:
+        last_index = -1
+    next_index = (last_index + 1) % len(THEME_ORDER)
+    
+    for i in range(len(THEME_ORDER)):
+        current_index = (next_index + i) % len(THEME_ORDER)
+        theme = THEME_ORDER[current_index]
+        
+        print(f"\n=== Ищем новости по теме: {theme} ===")
+        candidates = get_news_candidates(theme)
+        
+        if candidates:
+            print(f"Отправляем {len(candidates)} кандидатов на оценку ИИ...")
+            best_news = pick_most_important(candidates)
+            
+            if best_news:
+                print(f"✅ Выбрана новость: {best_news['title']}")
+                post_body = rewrite_with_ai(best_news['title'], best_news['summary'], theme)
+                
+                print(f"Сгенерированный текст:\n{post_body}\n")
+                
+                tg_success = send_to_telegram(post_body, best_news['media_type'], best_news['media_url'])
+                print(f"Telegram: {'OK' if tg_success else 'FAIL'}")
+                
+                if tg_success:
+                    save_last_theme(theme)
+                    save_posted_link(best_news['link'])
+                    print("Состояние сохранено (защита от дублей).")
+                    
+                    vk_result = send_to_vk(post_body, best_news['media_type'], best_news['media_url'])
+                    print(f"ВКонтакте: {'OK' if vk_result else 'FAIL'}")
+                    
+                    max_result = send_to_max(post_body, best_news['media_type'], best_news['media_url'])
+                    print(f"MAX: {'OK' if max_result else 'FAIL'}")
+                    
+                    print(f"\n🎉 Готово! Следующая тема: {theme}")
+                    return
+        
+    print("\n❌ Не удалось найти подходящих новостей.")
+    sys.exit(0)
+
+if __name__ == "__main__":
+    main()
