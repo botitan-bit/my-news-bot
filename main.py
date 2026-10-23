@@ -143,7 +143,6 @@ def get_news_candidates(theme):
     all_entries = []
     for feed_url in RSS_FEEDS:
         try:
-            # 👇 ИСПОЛЬЗУЕМ REQUESTS С ТАЙМАУТОМ 10 СЕК, ЧТОБЫ НЕ ВИСНУТЬ
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
             resp = requests.get(feed_url, timeout=10, headers=headers)
             resp.raise_for_status()
@@ -216,10 +215,10 @@ def call_groq(prompt):
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json",
     }
-    payload = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}]}
+    # 👇 ИСПРАВЛЕНА МОДЕЛЬ GROQ НА СТАБИЛЬНУЮ
+    payload = {"model": "llama3-70b-8192", "messages": [{"role": "user", "content": prompt}]}
     
     try:
-        # Таймаут 10 секунд. Если Groq тупит - идем дальше.
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
         return response.json()['choices'][0]['message']['content'].strip()
@@ -269,7 +268,7 @@ def rewrite_with_ai(title, summary, theme):
 """
     raw_text = call_groq(prompt)
     
-    # СТРАХОВКА: Если Groq не ответил, используем оригинал
+    # СТРАХОВКА
     if not raw_text:
         print("⚠️ ИИ недоступен. Применяем страховку (сырой текст).")
         clean_summary = summary.strip()
