@@ -68,7 +68,6 @@ RUSSIA_KEYWORDS = [
     "фронт", "шойгу", "белоусов", "губернатор", "сочи", "камчатк", "чукотк", "перм", "геленджик", "иванов", "нижний новгород", "певек"
 ]
 
-# 👇 РАСШИРЕННЫЙ ЧЕРНЫЙ СПИСОК (Добавлен официальный канцелярит и скука)
 BLACKLIST_WORDS = [
     "какой сегодня", "какой праздник", "гороскоп", "день рождения", "история дня", 
     "в этот день", "народные приметы", "церковный календарь", "лунный календарь", "именины",
@@ -78,7 +77,7 @@ BLACKLIST_WORDS = [
     "спектакль", "ледовый", "фигурист", "авербух", "петросян", "концерт", "развлечение", "шоу", "праздник", "фестиваль", "выступление",
     "продолжают спецоперацию", "выполняют задачи", "боевая готовность", "полная готовность", "активные действия", "выполняют боевые задачи", "решают задачи", "контроль над ситуацией",
     "автобус", "маршрутка", "прямой эфир", "прямая трансляция", "смотрите эфир", "ожидается эфир",
-    "визит", "совещание", "рабочая поездка", "подписал", "вручил", "обсудил", "поздравил", "открыл", "посетил", "заявление", "пресс-конференция", "круглый стол" # 👈 НОВЫЕ СЛОВА
+    "визит", "совещание", "рабочая поездка", "подписал", "вручил", "обсудил", "поздравил", "открыл", "посетил", "заявление", "пресс-конференция", "круглый стол"
 ]
 
 def ensure_state_files_exist():
@@ -123,22 +122,6 @@ def save_posted_video(url):
     with open("posted_videos.txt", "a", encoding="utf-8") as f:
         f.write(url + "\n")
 
-def get_posted_images():
-    if os.path.exists("posted_images.txt"):
-        with open("posted_images.txt", "r", encoding="utf-8") as f:
-            return f.read().splitlines()
-    return []
-
-def clean_image_url(url):
-    if not url: return ""
-    return url.split('?')[0].strip()
-
-def save_posted_image(url):
-    clean_url = clean_image_url(url)
-    if not clean_url: return
-    with open("posted_images.txt", "a", encoding="utf-8") as f:
-        f.write(clean_url + "\n")
-
 def get_recent_titles():
     if os.path.exists("published_titles.txt"):
         with open("published_titles.txt", "r", encoding="utf-8") as f:
@@ -167,15 +150,6 @@ def is_theme_match(text, theme):
     text_lower = text.lower()
     for keyword in THEMES[theme]:
         if re.search(r'(?:^|[^а-яё])' + re.escape(keyword), text_lower):
-            return True
-    return False
-
-def is_old_news(title, summary):
-    current_year = datetime.now().year
-    text = f"{title} {summary}".lower()
-    years = re.findall(r'\b(20\d{2})\b', text)
-    for year in years:
-        if int(year) < current_year:
             return True
     return False
 
@@ -269,101 +243,7 @@ def get_tg_web_videos(channel_name, theme, now):
         pass
     return videos
 
-def process_feeds(feed_list, theme, posted_links, posted_images, posted_hashes, now):
-    entries = []
-    for feed_url in feed_list:
-        try:
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-            resp = requests.get(feed_url, timeout=10, headers=headers)
-            resp.raise_for_status()
-            feed = feedparser.parse(resp.content)
-            
-            for entry in feed.entries[:60]:
-                link = entry.get("link", "")
-                if link in posted_links: continue
-                
-                title = entry.get("title", "")
-                
-                if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                    pub_time = time.mktime(entry.published_parsed)
-                    pub_date = datetime.fromtimestamp(pub_time, timezone.utc)
-                    age_hours = (now - pub_date).total_seconds() / 3600
-                else:
-                    age_hours = 8.0
-                
-                summary = entry.get("summary", entry.get("description", ""))
-                summary_clean = re.sub(r'<[^>]+>', '', summary).strip()
-                
-                if is_old_news(title, summary): continue
-                if len(summary_clean) < 20: continue
-                if is_blacklisted(f"{title} {summary_clean}"): continue
-                
-                full_raw_text = f"{title} {summary_clean}"
-                text_hash = get_text_hash(full_raw_text)
-                if text_hash in posted_hashes:
-                    continue
-                
-                media_type = None
-                media_url = None
-                
-                if 'enclosures' in entry:
-                    for enc in entry.enclosures:
-                        url = enc.get('href', '')
-                        if url:
-                            url = urljoin(feed_url, url)
-                            if 'video' in enc.get('type', ''): 
-                                media_type, media_url = 'video', url
-                                break
-                            if 'image' in enc.get('type', ''):
-                                media_type, media_url = 'image', url
-
-                if not media_type:
-                    html_to_search = ""
-                    if 'content' in entry:
-                        for content_block in entry.content:
-                            html_to_search += content_block.get('value', '')
-                    html_to_search += entry.get('summary', entry.get('description', ''))
-                    
-                    vid_match = re.search(r'(https?://[^\s"<>]+\.mp4)', html_to_search)
-                    if vid_match:
-                        media_type, media_url = 'video', vid_match.group(1)
-                    else:
-                        vid_tag_match = re.search(r'<video[^>]+src="([^">]+)"', html_to_search)
-                        if vid_tag_match:
-                            media_type, media_url = 'video', urljoin(feed_url, vid_tag_match.group(1))
-                        else:
-                            img_match = re.search(r'<img[^>]+src="([^">]+)"', html_to_search)
-                            if img_match:
-                                media_type, media_url = 'image', urljoin(feed_url, img_match.group(1))
-
-                if not media_type:
-                    continue
-                
-                if media_type == 'image' and media_url and clean_image_url(media_url) in posted_images:
-                    continue
-                
-                full_text = f"{title} {summary}"
-                
-                entries.append({
-                    "title": title,
-                    "summary": summary_clean,
-                    "age_hours": age_hours,
-                    "media_type": media_type,
-                    "media_url": media_url,
-                    "link": link,
-                    "text_hash": text_hash,
-                    "theme_match": is_theme_match(full_text, theme),
-                    "russia_match": is_russia_related(full_text),
-                    "has_media": True
-                })
-        except Exception as e:
-            pass
-    return entries
-
 def get_news_candidates(theme):
-    posted_links = get_posted_links()
-    posted_images = [clean_image_url(img) for img in get_posted_images()]
-    posted_hashes = get_posted_hashes()
     now = datetime.now(timezone.utc)
     
     print(f"  -> Ищем видео в веб-версиях Telegram-каналов...")
@@ -379,28 +259,8 @@ def get_news_candidates(theme):
         print(f"🔥 Найдено {len(tg_videos)} ВИДЕО в веб-версиях Telegram!")
         return tg_videos[:5]
 
-    print("  -> Видео в веб-версиях не найдено. Проверяем RSS...")
-    priority_entries = process_feeds(PRIORITY_FEEDS, theme, posted_links, posted_images, posted_hashes, now)
-    general_entries = process_feeds(RSS_FEEDS, theme, posted_links, posted_images, posted_hashes, now)
-    
-    all_entries = priority_entries + general_entries
-    print(f"Собрано всего новостей (с медиа): {len(all_entries)}")
-    
-    c_video = [e for e in all_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'video']
-    if c_video: return sorted(c_video, key=lambda e: e['age_hours'])[:5]
-
-    c_img_priority = [e for e in priority_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
-    if c_img_priority: return sorted(c_img_priority, key=lambda e: e['age_hours'])[:5]
-    
-    c_img_priority_24 = [e for e in priority_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
-    if c_img_priority_24: return sorted(c_img_priority_24, key=lambda e: e['age_hours'])[:5]
-
-    c_img_general = [e for e in general_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
-    if c_img_general: return sorted(c_img_general, key=lambda e: e['age_hours'])[:5]
-
-    c_img_general_24 = [e for e in general_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
-    if c_img_general_24: return sorted(c_img_general_24, key=lambda e: e['age_hours'])[:5]
-    
+    # 👇 ЕСЛИ ВИДЕО НЕТ, ВОЗВРАЩАЕМ ПУСТОЙ СПИСОК (КАРТИНКИ ОТКЛЮЧЕНЫ)
+    print("  ❌ Видео не найдено. Пропускаем запуск (картинки отключены).")
     return []
 
 def call_groq(prompt):
@@ -424,26 +284,21 @@ def call_groq(prompt):
 def pick_most_important(candidates):
     if not candidates: return None
     
-    # 👇 ПЕРЕДАЕМ ИИ ИНФОРМАЦИЮ О ТИПЕ МЕДИА
-    titles_list = "\n".join([f"{i}. [{c['media_type']}] {c['title']}" for i, c in enumerate(candidates)])
+    titles_list = "\n".join([f"{i}. {c['title']}" for i, c in enumerate(candidates)])
     
     recent_titles = get_recent_titles()
     history_text = ""
     if recent_titles:
         history_text = "УЖЕ ОПУБЛИКОВАНО РАНЕЕ:\n" + "\n".join(recent_titles) + "\n"
     
-    # 👇 ЖЕСТКИЙ ПРОМПТ: ВИДЕО ВСЕГДА В ПРИОРИТЕТЕ
     prompt = f"""Ты — редактор жесткого новостного канала. 
 Выбери ОДИН самый интересный заголовок из списка.
-
-ПРАВИЛА ВЫБОРА:
-1. Если в списке есть новость с меткой [video] — ОБЯЗАТЕЛЬНО выбирай её. Видео всегда интереснее и важнее для канала.
-2. Игнорируй новости про шоу-бизнес, актеров, спорт, концерты, визиты чиновников и скучные совещания.
-3. Выбирай только то, что содержит экшн: СВО, криминал, ДТП, катастрофы.
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выбирать новости про шоу-бизнес, актеров, спорт, концерты, визиты чиновников и скучные совещания.
+Выбирай только то, что содержит экшн: СВО, криминал, ДТП, катастрофы.
 
 {history_text}
 
-Если ВСЕ новости в списке — это скучный мусор (политика, визиты, спорт) или ОНИ УЖЕ БЫЛИ ОПУБЛИКОВАНЫ, ответь NONE.
+Если ВСЕ новости в списке — это скучный мусор или ОНИ УЖЕ БЫЛИ ОПУБЛИКОВАНЫ, ответь NONE.
 В противном случае ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}).
 
 Список:
@@ -472,7 +327,7 @@ def rewrite_with_ai(title, summary, theme):
     prompt = f"""Ты — профессиональный редактор. Перепиши новость так, чтобы она была понятной, цепляющей и ТОЛЬКО НА РУССКОМ ЯЗЫКЕ.
 КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ любые английские слова и фразы вроде "ожидается прямой эфир".
 ВНИМАТЕЛЬНО ПРОВЕРЯЙ СЛОВА. Не заменяй правильные слова на похожие по звучанию.
-Если в исходном тексте ТОЛЬКО общие фразы про визиты, совещания или заявления чиновников, напиши слово NONE.
+Если в исходном тексте ТОЛЬКО общие фразы, напиши слово NONE.
 
 Формат ответа:
 1. Заголовок в теге <b>...</b>. Сделай его громким и понятным.
@@ -506,22 +361,6 @@ def rewrite_with_ai(title, summary, theme):
 
     return sanitize_html(raw_text)
 
-def send_photo(photo_url, caption):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-    payload = {"chat_id": TELEGRAM_CHANNEL_ID, "photo": photo_url, "caption": caption, "parse_mode": "HTML"}
-    try:
-        r = requests.post(url, json=payload, timeout=10)
-        if r.status_code == 200: return True
-    except: pass
-    try:
-        img_data = requests.get(photo_url, timeout=10).content
-        files = {'photo': ('image.jpg', img_data)}
-        data = {"chat_id": TELEGRAM_CHANNEL_ID, "caption": caption, "parse_mode": "HTML"}
-        r = requests.post(url, data=data, files=files, timeout=15)
-        if r.status_code == 200: return True
-    except: pass
-    return False
-
 def send_video(video_url, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
     payload = {"chat_id": TELEGRAM_CHANNEL_ID, "video": video_url, "caption": caption, "parse_mode": "HTML", "supports_streaming": True}
@@ -543,8 +382,6 @@ def send_to_telegram(text, media_type, media_url):
     full_text = f"{text}\n\n{SIGNATURE_TG}"
     if media_type == 'video' and media_url:
         if send_video(media_url, full_text): return True
-    elif media_type == 'image' and media_url:
-        if send_photo(media_url, full_text): return True
         
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHANNEL_ID, "text": full_text, "parse_mode": "HTML", "disable_web_page_preview": True}
@@ -564,18 +401,8 @@ def send_to_vk(text, media_type, media_url):
     try:
         vk_session = vk_api.VkApi(token=VK_TOKEN)
         vk = vk_session.get_api()
-        attachments = ""
         
-        if POST_PHOTO_TO_VK and media_type == 'image' and media_url:
-            try:
-                img_data = requests.get(media_url, timeout=10).content
-                upload = VkUpload(vk_session)
-                photo = upload.photo_wall(io.BytesIO(img_data), group_id=int(VK_GROUP_ID))[0]
-                attachments = f"photo{photo['owner_id']}_{photo['id']}"
-            except Exception as e:
-                pass
-        
-        vk.wall.post(owner_id=f"-{VK_GROUP_ID}", message=clean_text, attachments=attachments, from_group=1)
+        vk.wall.post(owner_id=f"-{VK_GROUP_ID}", message=clean_text, from_group=1)
         print("✅ ВК: Успешно опубликовано!")
         return True
     except Exception as e:
@@ -639,12 +466,6 @@ def send_to_max(text, media_type, media_url):
                 "type": "video",
                 "payload": {"token": media_token}
             })
-            
-        elif media_type == 'image' and media_url:
-            attachments.append({
-                "type": "image",
-                "payload": {"url": media_url}
-            })
     
     except Exception as e:
         print(f"  ⚠️ Ошибка подготовки медиа для MAX: {e}")
@@ -707,10 +528,7 @@ def main():
                     save_posted_hash(best_news['text_hash'])
                     
                     if best_news.get('media_url'):
-                        if best_news['media_type'] == 'video':
-                            save_posted_video(best_news['media_url'])
-                        else:
-                            save_posted_image(best_news['media_url'])
+                        save_posted_video(best_news['media_url'])
                         
                     vk_result = send_to_vk(post_body, best_news['media_type'], best_news['media_url'])
                     print(f"ВКонтакте: {'OK' if vk_result else 'FAIL'}")
@@ -723,7 +541,7 @@ def main():
             else:
                  print("ИИ отклонил всех кандидатов. Ищем в следующей теме.")
 
-    print("\n❌ Не удалось найти подходящих новостей.")
+    print("\n❌ Не удалось найти видео. Пропускаем запуск.")
     sys.exit(0)
 
 if __name__ == "__main__":
