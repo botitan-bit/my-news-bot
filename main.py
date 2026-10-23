@@ -17,6 +17,9 @@ TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
 VK_TOKEN = os.environ.get("VK_TOKEN", "").strip()
 VK_GROUP_ID = os.environ.get("VK_GROUP_ID", "").strip()
 
+# 👇 ТЕСТОВЫЙ РЕЖИМ ВК: False = постим только текст (без фото)
+POST_PHOTO_TO_VK = False 
+
 RSS_FEEDS = [
     "https://lenta.ru/rss/news",
     "https://ria.ru/export/rss2/archive/index.xml",
@@ -36,11 +39,9 @@ THEMES = {
 }
 THEME_ORDER = ["Политика", "СВО", "Мигранты", "Происшествия"]
 
-# 👇 СТАВИМ УНИВЕРСАЛЬНУЮ МОДЕЛЬ ОСНОВНОЙ
 PRIMARY_MODEL = "openrouter/free"
 FALLBACK_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
-# 👇 РАСШИРИЛИ СПИСОК ГОРОДОВ, НО ТЕПЕРЬ ГЛАВНАЯ НАДЕЖДА НА ИИ
 RUSSIA_KEYWORDS = [
     "росси", "рф", "путин", "кремл", "москв", "петербург", "ленинград", "курск", "белгород", 
     "донбасс", "донецк", "луганск", "крым", "севастопол", "херсон", "запорож", "госдум", 
@@ -133,7 +134,7 @@ def get_news_candidates(theme):
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:40]: # Увеличили до 40, чтобы найти больше российских
+            for entry in feed.entries[:40]:
                 link = entry.get("link", "")
                 if link in posted_links: continue
 
@@ -146,19 +147,20 @@ def get_news_candidates(theme):
 
                 title = entry.get("title", "")
                 summary = entry.get("summary", entry.get("description", ""))
+                
+                # 👇 НОВАЯ ПРОВЕРКА: Если текста нет или он слишком короткий — пропускаем
+                summary_clean = re.sub(r'<[^>]+>', '', summary).strip()
+                if len(summary_clean) < 15:
+                    continue
+
                 full_text = f"{title} {summary}"
                 
                 if is_old_news(title, summary): continue
-                
-                # Оставляем жесткий фильтр, но он теперь умнее
-                if not is_russia_related(full_text):
-                    print(f"Отсеяна зарубежная новость (по ключевым словам): {title}")
-                    continue
+                if not is_russia_related(full_text): continue
 
                 if is_theme_match(full_text, theme):
                     media_type, media_url = get_media_from_entry(entry, feed_url)
                     if media_type:
-                        summary_clean = re.sub(r'<[^>]+>', '', summary)
                         candidates.append({
                             "title": title,
                             "summary": summary_clean,
@@ -193,10 +195,9 @@ def call_openrouter(prompt):
 def pick_most_important(candidates):
     if not candidates: return None
     titles_list = "\n".join([f"{i}. {c['title']}" for i, c in enumerate(candidates)])
-    # 👇 ДОБАВИЛИ ПРАВИЛО ПРО РОССИЮ В ПРОМПТ ИИ
     prompt = f"""Ты главный редактор новостного канала.
 Выбери ОДИН самый важный заголовок из списка. 
-ОБЯЗАТЕЛЬНОЕ УСЛОВИЕ: Новость должна касаться России (её регионов, городов, граждан, политики или экономики). Игнорируй мировые новости, если они не связаны с РФ напрямую.
+ОБЯЗАТЕЛЬНОЕ УСЛОВИЕ: Новость должна касаться России. Игнорируй мировые новости, если они не связаны с РФ.
 Ответь только цифрой от 0 до {len(candidates)-1}:\n{titles_list}"""
     
     answer = call_openrouter(prompt)
@@ -219,7 +220,7 @@ def rewrite_with_ai(title, summary, theme):
 Требования к посту:
 1. Заголовок: Возьми исходный заголовок, убери из него кликбейт (если есть), и оберни в тег <b>...</b>.
 2. После закрывающего тега </b> сделай ДВА переноса строки (оставь пустую строку).
-3. Текст: Возьми исходный текст. Исправь только орфографические, грамматические ошибки и пунктуацию. Если текст обрывается на полуслове, аккуратно заверши мысль.
+3. Текст: Возьми исходный текст. Исправь только орфографические, грамматические ошибки и пунктуацию.
 4. Добавь 1-2 уместных эмодзи в начало текста.
 5. Не добавляй никаких своих комментариев. Дай только готовый пост.
 
@@ -231,6 +232,10 @@ def rewrite_with_ai(title, summary, theme):
     if not raw_text: 
         raw_text = f"<b>{title}</b>\n\n{summary}"
         
+    # 👇 ОЧИСТКА ОТ МЕТА-ОТВЕТОВ ИИ (если он все же написал "Note:")
+    raw_text = re.sub(r'\(Note:.*?\)', '', raw_text, flags=re.IGNORECASE)
+    raw_text = re.sub(r'Since the original text.*?\n', '', raw_text, flags=re.IGNORECASE)
+    
     raw_text = re.sub(r'</b>\s*', '</b>\n\n', raw_text)
     raw_text = raw_text[:900]
     return f"{sanitize_html(raw_text)}\n\n{SIGNATURE}"
@@ -281,7 +286,6 @@ def send_to_telegram(text, media_type, media_url):
     except: pass
     return False
 
-# 👇 ДЕТАЛЬНЫЙ ВЫВОД ОШИБКИ ВК
 def send_to_vk(text, media_type, media_url):
     if not VK_TOKEN or not VK_GROUP_ID: 
         print("ВК: Нет токена или ID группы.")
@@ -293,7 +297,9 @@ def send_to_vk(text, media_type, media_url):
         vk_session = vk_api.VkApi(token=VK_TOKEN)
         vk = vk_session.get_api()
         attachments = ""
-        if media_type == 'image' and media_url:
+        
+        # 👇 ТЕСТОВЫЙ РЕЖИМ: если POST_PHOTO_TO_VK = False, картинки не грузим
+        if POST_PHOTO_TO_VK and media_type == 'image' and media_url:
             try:
                 img_data = requests.get(media_url, timeout=30).content
                 upload = VkUpload(vk_session)
@@ -307,7 +313,6 @@ def send_to_vk(text, media_type, media_url):
         return True
     except Exception as e:
         print(f"ВК Ошибка: {e}")
-        # Выводим полный ответ сервера ВК, чтобы понять в чем дело
         if hasattr(e, 'response') and e.response is not None:
             print("Ответ сервера ВК:", e.response.text)
         return False
