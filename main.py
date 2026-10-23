@@ -89,6 +89,17 @@ def save_posted_link(link):
     with open("posted_news.txt", "a", encoding="utf-8") as f:
         f.write(link + "\n")
 
+def get_posted_videos():
+    if os.path.exists("posted_videos.txt"):
+        with open("posted_videos.txt", "r", encoding="utf-8") as f:
+            return f.read().splitlines()
+    return []
+
+def save_posted_video(url):
+    if not url: return
+    with open("posted_videos.txt", "a", encoding="utf-8") as f:
+        f.write(url + "\n")
+
 def get_posted_images():
     if os.path.exists("posted_images.txt"):
         with open("posted_images.txt", "r", encoding="utf-8") as f:
@@ -155,6 +166,8 @@ def is_blacklisted(text):
 
 def get_tg_web_videos(channel_name, theme, now):
     videos = []
+    posted_videos = get_posted_videos() # 👈 Загружаем историю видео
+    
     url = f"https://t.me/s/{channel_name}"
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -168,8 +181,6 @@ def get_tg_web_videos(channel_name, theme, now):
         if not posts:
             print(f"  [{channel_name}] Постов не найдено.")
             return []
-        
-        print(f"  [{channel_name}] Всего постов на странице: {len(posts)}")
         
         for post in reversed(posts):
             video_url = None
@@ -195,6 +206,10 @@ def get_tg_web_videos(channel_name, theme, now):
             
             if video_url.startswith("//"):
                 video_url = "https:" + video_url
+            
+            # 👇 ПРОВЕРКА НА ДУБЛИ ВИДЕО
+            if video_url in posted_videos:
+                continue
             
             text_tag = post.select_one(".tgme_widget_message_text")
             if not text_tag:
@@ -223,8 +238,6 @@ def get_tg_web_videos(channel_name, theme, now):
                 "has_media": True
             })
         
-        if not videos:
-            print(f"  [{channel_name}] Видео не найдено после фильтрации.")
     except Exception as e:
         print(f"Ошибка парсинга {channel_name}: {e}")
     return videos
@@ -390,7 +403,7 @@ def pick_most_important(candidates):
 
 {history_text}
 
-Если ВСЕ новости в списке — это шоу-бизнес, спорт или пустые сводки, ответь NONE.
+Если ВСЕ новости в списке — это шоу-бизнес, спорт, пустые сводки или ОНИ УЖЕ БЫЛИ ОПУБЛИКОВАНЫ РАНЕЕ, ответь NONE.
 В противном случае ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}).
 
 Список:
@@ -416,7 +429,6 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
-    # 👇 ДОБАВИЛИ ПРАВИЛО ПРО ОПЕЧАТКИ
     prompt = f"""Ты — профессиональный редактор. Перепиши новость так, чтобы она была понятной, цепляющей и ТОЛЬКО НА РУССКОМ ЯЗЫКЕ.
 КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ любые английские слова и фразы вроде "ожидается прямой эфир".
 ВНИМАТЕЛЬНО ПРОВЕРЯЙ СЛОВА. Не заменяй правильные слова на похожие по звучанию (например, не пиши "рейс" вместо "рейд").
@@ -542,14 +554,17 @@ def send_to_max(text, media_type, media_url):
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     
     attachments = []
+    # 👇 ДОБАВИЛИ ПОДДЕРЖКУ ВИДЕО ДЛЯ MAX
     if media_type == 'image' and media_url:
         attachments.append({"type": "image", "payload": {"url": media_url}})
+    elif media_type == 'video' and media_url:
+        attachments.append({"type": "video", "payload": {"url": media_url}})
     
     payload = {"text": clean_text, "format": "markdown"}
     if attachments: payload["attachments"] = attachments
 
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=10, verify=False)
+        response = requests.post(url, headers=headers, json=payload, timeout=15, verify=False)
         response.raise_for_status()
         print("✅ MAX: Успешно опубликовано!")
         return True
@@ -595,7 +610,10 @@ def main():
                     save_published_title(best_news['title'])
                     
                     if best_news.get('media_url'):
-                        save_posted_image(best_news['media_url'])
+                        if best_news['media_type'] == 'video':
+                            save_posted_video(best_news['media_url']) # 👈 СОХРАНЯЕМ ССЫЛКУ НА ВИДЕО
+                        else:
+                            save_posted_image(best_news['media_url'])
                         
                     vk_result = send_to_vk(post_body, best_news['media_type'], best_news['media_url'])
                     print(f"ВКонтакте: {'OK' if vk_result else 'FAIL'}")
