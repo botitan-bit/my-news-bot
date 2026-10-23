@@ -5,12 +5,17 @@ import re
 import sys
 import html
 import time
+import io
+import vk_api
+from vk_api.upload import VkUpload
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
+VK_TOKEN = os.environ.get("VK_TOKEN", "").strip()
+VK_GROUP_ID = os.environ.get("VK_GROUP_ID", "").strip()
 
 RSS_FEEDS = [
     "https://lenta.ru/rss/news",
@@ -98,7 +103,6 @@ def is_theme_match(text, theme):
 def is_old_news(title, summary):
     current_year = datetime.now().year
     text = f"{title} {summary}".lower()
-    
     years = re.findall(r'\b(20\d{2})\b', text)
     for year in years:
         if int(year) < current_year:
@@ -115,24 +119,19 @@ def get_news_candidates(theme):
             feed = feedparser.parse(feed_url)
             for entry in feed.entries[:30]:
                 link = entry.get("link", "")
-                if link in posted_links:
-                    continue
+                if link in posted_links: continue
 
                 if hasattr(entry, 'published_parsed') and entry.published_parsed:
                     pub_time = time.mktime(entry.published_parsed)
                     pub_date = datetime.fromtimestamp(pub_time, timezone.utc)
-                    # 👇 ТУТ ИЗМЕНЕНО НА 6 ЧАСОВ
-                    if now - pub_date > timedelta(hours=6):
-                        continue
+                    if now - pub_date > timedelta(hours=6): continue
                 else:
                     continue
 
                 title = entry.get("title", "")
                 summary = entry.get("summary", entry.get("description", ""))
                 
-                if is_old_news(title, summary):
-                    print(f"Отсеяна старая новость (упоминание прошлых лет): {title}")
-                    continue
+                if is_old_news(title, summary): continue
 
                 full_text = f"{title} {summary}"
                 
@@ -161,7 +160,6 @@ def call_openrouter(prompt):
         "HTTP-Referer": "https://github.com/",
         "X-Title": "News Bot",
     }
-    
     for model in [PRIMARY_MODEL, FALLBACK_MODEL]:
         payload = {"model": model, "messages": [{"role": "user", "content": prompt}]}
         try:
@@ -169,33 +167,18 @@ def call_openrouter(prompt):
             response.raise_for_status()
             return response.json()['choices'][0]['message']['content'].strip()
         except Exception as e:
-            print(f"⚠️ Ошибка при использовании модели {model}: {e}")
-            print("🔄 Пробуем следующую модель...")
-            
-    print("❌ Все доступные модели вернули ошибку.")
+            print(f"⚠️ Ошибка модели {model}: {e}")
     return ""
 
 def pick_most_important(candidates):
-    if not candidates:
-        return None
-    
+    if not candidates: return None
     titles_list = "\n".join([f"{i}. {c['title']}" for i, c in enumerate(candidates)])
-    
-    prompt = f"""Ты — главный редактор новостного канала.
-Вот список заголовков новостей:
-{titles_list}
-
-Выбери ОДИН самый важный, значимый и интересный для страны/мира заголовок. 
-Игнорируй мелкие бытовые происшествия, желтуху, шоу-бизнес и незначительные события.
-Ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}), без лишних слов."""
-    
+    prompt = f"Ты главный редактор. Выбери ОДИН самый важный заголовок из списка (ответь только цифрой от 0 до {len(candidates)-1}):\n{titles_list}"
     answer = call_openrouter(prompt)
     match = re.search(r'\d+', answer)
     if match:
         idx = int(match.group())
-        if 0 <= idx < len(candidates):
-            return candidates[idx]
-            
+        if 0 <= idx < len(candidates): return candidates[idx]
     return candidates[0]
 
 def sanitize_html(text):
@@ -205,32 +188,28 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
-    prompt = f"""Ты — профессиональный, строгий редактор крупного новостного Telegram-канала.
-Перепиши новость информативно, литературным русским языком, без сленга и желтухи.
-Исправь грамматические и фактические ошибки исходного текста.
-Будь деликатен. Не используй вульгарные или нецензурные выражения.
+    # 👇 НОВЫЙ ПРОМПТ: Теперь ИИ работает как корректор, а не писатель
+    prompt = f"""Ты — корректор новостного канала. Твоя задача — внести МИНИМАЛЬНЫЕ правки в исходный текст.
+Не переписывай новость заново, не сокращай её до потери смысла и не добавляй факты, которых нет в оригинале.
 
 Требования к посту:
-1. Начни с краткого и понятного заголовка, обернутого в HTML-тег <b>...</b>. Без кликбейта.
-2. После закрывающего тега </b> ОБЯЗАТЕЛЬНО сделай ДВА переноса строки (оставь пустую строку).
-3. Затем добавь 1-2 уместных эмодзи и краткий текст новости (суть, факты).
-4. Объем текста — до 400 символов.
-5. Дай только готовый пост, без твоих комментариев и вступлений.
+1. Заголовок: Возьми исходный заголовок, убери из него кликбейт (если есть), и оберни в тег <b>...</b>.
+2. После закрывающего тега </b> сделай ДВА переноса строки (оставь пустую строку).
+3. Текст: Возьми исходный текст. Исправь только орфографические, грамматические ошибки и пунктуацию. Если текст обрывается на полуслове, аккуратно заверши мысль.
+4. Добавь 1-2 уместных эмодзи в начало текста.
+5. Не добавляй никаких своих комментариев, вступлений или выводов. Дай только готовый пост.
 
 Рубрика: {theme}
-Заголовок: {title}
-Текст: {summary}
+Исходный заголовок: {title}
+Исходный текст: {summary}
 """
     raw_text = call_openrouter(prompt)
-    
-    if not raw_text:
+    if not raw_text: 
         raw_text = f"<b>{title}</b>\n\n{summary}"
         
     raw_text = re.sub(r'</b>\s*', '</b>\n\n', raw_text)
-    raw_text = raw_text[:800]
-    safe_text = sanitize_html(raw_text)
-    
-    return f"{safe_text}\n\n{SIGNATURE}"
+    raw_text = raw_text[:900] # Увеличили лимит, так как текст теперь не сокращается ИИ
+    return f"{sanitize_html(raw_text)}\n\n{SIGNATURE}"
 
 def send_photo(photo_url, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
@@ -239,7 +218,6 @@ def send_photo(photo_url, caption):
         r = requests.post(url, json=payload, timeout=30)
         if r.status_code == 200: return True
     except: pass
-    
     try:
         img_data = requests.get(photo_url, timeout=60).content
         files = {'photo': ('image.jpg', img_data)}
@@ -256,7 +234,6 @@ def send_video(video_url, caption):
         r = requests.post(url, json=payload, timeout=30)
         if r.status_code == 200: return True
     except: pass
-    
     try:
         video_data = requests.get(video_url, timeout=60).content
         if len(video_data) > 50 * 1024 * 1024: return False
@@ -272,21 +249,36 @@ def send_to_telegram(text, media_type, media_url):
         if send_video(media_url, text): return True
     elif media_type == 'image' and media_url:
         if send_photo(media_url, text): return True
-
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHANNEL_ID, 
-        "text": text, 
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True 
-    }
+    payload = {"chat_id": TELEGRAM_CHANNEL_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     try:
         r = requests.post(url, json=payload, timeout=30)
         if r.status_code == 200: return True
-        else: print(f"Ошибка отправки текста: {r.text}")
-    except Exception as e:
-        print(f"Критическая ошибка: {e}")
+    except: pass
     return False
+
+def send_to_vk(text, media_type, media_url):
+    if not VK_TOKEN or not VK_GROUP_ID: return False
+    print("Отправляем пост во ВКонтакте...")
+    clean_text = text.replace('<b>', '').replace('</b>', '').replace('&quot;', '"').replace('&amp;', '&')
+    try:
+        vk_session = vk_api.VkApi(token=VK_TOKEN)
+        vk = vk_session.get_api()
+        attachments = ""
+        if media_type == 'image' and media_url:
+            try:
+                img_data = requests.get(media_url, timeout=30).content
+                upload = VkUpload(vk_session)
+                photo = upload.photo_wall(io.BytesIO(img_data), group_id=VK_GROUP_ID)[0]
+                attachments = f"photo{photo['owner_id']}_{photo['id']}"
+            except Exception as e:
+                print(f"ВК: не удалось загрузить фото ({e}). Постим только текст.")
+        vk.wall.post(owner_id=f"-{VK_GROUP_ID}", message=clean_text, attachments=attachments, from_group=1)
+        print("ВК: Успешно опубликовано!")
+        return True
+    except Exception as e:
+        print(f"ВК Ошибка: {e}")
+        return False
 
 def main():
     last_theme = get_last_theme()
@@ -312,15 +304,16 @@ def main():
                 post = rewrite_with_ai(best_news['title'], best_news['summary'], theme)
                 print(f"Сгенерированный текст:\n{post}\n")
                 
-                success = send_to_telegram(post, best_news['media_type'], best_news['media_url'])
+                tg_success = send_to_telegram(post, best_news['media_type'], best_news['media_url'])
                 
-                if success:
+                if tg_success:
+                    send_to_vk(post, best_news['media_type'], best_news['media_url'])
                     save_last_theme(theme)
                     save_posted_link(best_news['link'])
-                    print(f"Опубликовано! Следующая тема: {theme}")
+                    print(f"Успех! Следующая тема: {theme}")
                     return
         
-    print("Не удалось найти свежие новости (моложе 6 часов). Пропускаем запуск.")
+    print("Не удалось найти свежие новости. Пропускаем запуск.")
     sys.exit(0)
 
 if __name__ == "__main__":
