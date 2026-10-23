@@ -35,7 +35,6 @@ RSS_FEEDS = [
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=fsb_official&format=Atom",
 ]
 
-# 👇 ПОДПИСИ ДЛЯ РАЗНЫХ ПЛАТФОРМ
 SIGNATURE_TG = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
 SIGNATURE_MAX = '**[ПЕРВЫЕ НОВОСТИ](https://t.me/+l7bgzfXgngBkN2My)**'
 
@@ -58,13 +57,13 @@ RUSSIA_KEYWORDS = [
     "фронт", "шойгу", "белоусов", "губернатор", "сочи", "камчатк", "чукотк", "перм", "геленджик", "иванов", "нижний новгород", "певек"
 ]
 
+# 👇 СМЯГЧИЛИ ЧЕРНЫЙ СПИСОК (Убрали "операция", "рейд" и т.д., чтобы не резать важные новости)
 BLACKLIST_WORDS = [
     "какой сегодня", "какой праздник", "гороскоп", "день рождения", "история дня", 
     "в этот день", "народные приметы", "церковный календарь", "лунный календарь", "именины",
     "заседание", "законопроект", "бюджет", "форум", "выставка", "конференция", "экономика", "инфляция", "курс валют",
     "спорт", "гонщик", "гонка", "автоспорт", "футбол", "хоккей", "олимпиад", "чемпионат", "турнир", "матч", "клуб", "тренер",
-    "шоу-бизнес", "актер", "актриса", "певец", "певица", "звезда", "сериал", "фильм", "премьера", "инстаграм", "тикток",
-    "операция", "рейд", "подозреваемых", "задержано", "статистика", "итоги", "совещание", "круглый стол", "сводка мвд"
+    "шоу-бизнес", "актер", "актриса", "певец", "певица", "звезда", "сериал", "фильм", "премьера", "инстаграм", "тикток"
 ]
 
 def get_posted_links():
@@ -215,7 +214,6 @@ def get_news_candidates(theme):
 
                 if media_type == 'image' and media_url:
                     if clean_image_url(media_url) in posted_images:
-                        print(f"Отсеяна картинка-заглушка: {clean_image_url(media_url)}")
                         continue
                 
                 full_text = f"{title} {summary}"
@@ -232,12 +230,9 @@ def get_news_candidates(theme):
                     "has_media": True
                 })
         except Exception as e:
-            print(f"Ошибка чтения {feed_url}: {e}")
-    
-    print(f"Собрано всего новостей (с картинками и прошедших фильтр): {len(all_entries)}")
-    
-    c = [e for e in all_entries if e['age_hours'] <= 6 and e['russia_match'] and e['theme_match']]
-    if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
+            pass # Игнорируем ошибки RSS-Bridge, чтобы не засорять лог
+            
+    print(f"Собрано всего новостей: {len(all_entries)}")
     
     c = [e for e in all_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match']]
     if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
@@ -265,7 +260,7 @@ def call_groq(prompt):
         response.raise_for_status()
         return response.json()['choices'][0]['message']['content'].strip()
     except Exception as e:
-        print(f"⚠️ Ошибка или таймаут Groq: {e}")
+        print(f"⚠️ Ошибка Groq: {e}")
         return ""
 
 def pick_most_important(candidates):
@@ -275,34 +270,21 @@ def pick_most_important(candidates):
     recent_titles = get_recent_titles()
     history_text = ""
     if recent_titles:
-        history_text = "УЖЕ ОПУБЛИКОВАНО РАНЕЕ (НЕ ВЫБИРАЙ ЭТИ ТЕМЫ ПОВТОРНО):\n" + "\n".join(recent_titles) + "\n"
+        history_text = "УЖЕ ОПУБЛИКОВАНО РАНЕЕ:\n" + "\n".join(recent_titles) + "\n"
     
-    prompt = f"""Ты — редактор жесткого новостного канала. Твоя цель — собрать максимум просмотров.
-Выбери ОДИН самый важный, резонансный или трагичный заголовок из списка.
-
-КАТЕГОРИЧЕСКИ ИГНОРИРУЙ:
-- Сухие милицейские сводки и статистику (например, "операция Розыск, задержано 1000 человек", "итоги рейда"). Нам нужны КОНКРЕТНЫЕ события.
-- Любой спорт, шоу-бизнес, знаменитостей, уехавших за границу.
-- Скучную экономику и заседания.
-
-ВЫБИРАЙ ТОЛЬКО КОНКРЕТИКУ:
-- Крупные ДТП с жертвами, крушения, взрывы, пожары (с указанием места).
-- Убийства, нападения, поимку маньяков (что именно произошло).
-- Преступления мигрантов, конфликты на национальной почве.
-- Скандалы с иноагентами, шпионами.
-
+    # 👇 СМЯГЧИЛИ ПРОМПТ (Разрешили ИИ брать то, что есть, и не отклонять всё)
+    prompt = f"""Ты — редактор новостного канала. Выбери ОДИН самый интересный заголовок из списка.
+Не выбирай спорт, шоу-бизнес и скучную экономику.
 {history_text}
-
-Если ВСЕ новости в списке не подходят под критерии (сухие сводки или дубли), ответь словом NONE.
+Если все новости описывают те же события, что и выше, ответь NONE.
 В противном случае ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}).
 
-Список новых кандидатов:
+Список:
 {titles_list}"""
     
     answer = call_groq(prompt)
     
     if "NONE" in answer.upper():
-        print("ИИ определил, что все новости - сухие сводки или дубли. Пропускаем.")
         return None
         
     if answer:
@@ -320,36 +302,33 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
+    # 👇 СМЯГЧИЛИ ПРОМПТ (Убрали условие "если нет конкретики - напиши NONE")
     prompt = f"""Ты — профессиональный, но дерзкий редактор. Перепиши новость так, чтобы её хотелось прочитать.
 Запрещено упоминать источники и писать служебные слова.
-Если в исходном тексте НЕТ КОНКРЕТИКИ (непонятно кого убили, где взорвалось, что случилось), напиши слово NONE.
 
-Формат ответа (если есть конкретика):
-1. Заголовок в теге <b>...</b>. Сделай его громким, но без дешевых слов (типа "Шок").
+Формат ответа:
+1. Заголовок в теге <b>...</b>. Сделай его громким (но без слов "Шок").
 2. ДВА переноса строки.
-3. 1-2 эмодзи и краткий текст с фактами.
+3. 1-2 эмодзи и краткий текст с фактами. Если фактов мало, опиши то, что есть, но эмоционально.
 
 Исходный заголовок: {title}
 Исходный текст: {summary}
 """
     raw_text = call_groq(prompt)
     
-    if not raw_text or "NONE" in raw_text.upper():
-        print("⚠️ ИИ не смог переписать новость (нет конкретики). Отклоняем.")
-        return None
+    if not raw_text:
+        print("⚠️ ИИ не ответил. Страховка (сырой текст).")
+        clean_title = re.sub(r'<[^>]+>', '', title).strip()
+        clean_summary = summary.strip()[:600] + "..."
+        return sanitize_html(f"<b>{clean_title}</b>\n\n🚨 {clean_summary}")
         
     raw_text = re.sub(r'^(Category|Рубрика|Категория):.*?\n', '', raw_text, flags=re.IGNORECASE)
-    for pattern in [r'—\s*в материале[^.]*\.', r'—\s*подробнее[^.]*\.', r'—\s*читайте[^.]*\.', r'—\s*на сайте[^.]*\.', r'сообщает[^.]*\.', r'источник:[^\n]*']:
+    for pattern in [r'—\s*в материале[^.]*\.', r'—\s*подробнее[^.]*\.', r'—\s*читайте[^.]*\.', r'—\s*на сайте[^.]*\.']:
         raw_text = re.sub(pattern, '', raw_text, flags=re.IGNORECASE)
 
     raw_text = re.sub(r'</b>\s*', '</b>\n\n', raw_text)
     raw_text = raw_text.replace('\\n', '\n')
     raw_text = raw_text[:900]
-    
-    plain_body = re.sub(r'<[^>]+>', '', raw_text).strip()
-    if len(plain_body) < 40:
-         print("⚠️ Текст после генерации слишком короткий. Отклоняем.")
-         return None
 
     return sanitize_html(raw_text)
 
@@ -379,7 +358,6 @@ def send_video(video_url, caption):
     return False
 
 def send_to_telegram(text, media_type, media_url):
-    # 👇 ИСПОЛЬЗУЕМ SIGNATURE_TG
     full_text = f"{text}\n\n{SIGNATURE_TG}"
     if media_type == 'video' and media_url:
         if send_video(media_url, full_text): return True
@@ -413,7 +391,7 @@ def send_to_vk(text, media_type, media_url):
                 photo = upload.photo_wall(io.BytesIO(img_data), group_id=int(VK_GROUP_ID))[0]
                 attachments = f"photo{photo['owner_id']}_{photo['id']}"
             except Exception as e:
-                print(f"ВК: Ошибка загрузки фото -> {e}. Постим только текст.")
+                pass
         
         vk.wall.post(owner_id=f"-{VK_GROUP_ID}", message=clean_text, attachments=attachments, from_group=1)
         print("✅ ВК: Успешно опубликовано!")
@@ -426,11 +404,8 @@ def send_to_max(text, media_type, media_url):
     if not MAX_BOT_TOKEN or not MAX_CHANNEL_ID: return False
         
     print("Отправляем пост в MAX...")
-    # Конвертируем HTML в Markdown для MAX
     clean_text = text.replace('<b>', '**').replace('</b>', '**')
     clean_text = html.unescape(clean_text).strip()
-    
-    # 👇 ДОБАВЛЯЕМ ПОДПИСЬ ДЛЯ MAX С ОТСТУПОМ
     clean_text = f"{clean_text}\n\n{SIGNATURE_MAX}"
     
     url = f"https://platform-api2.max.ru/messages?chat_id={MAX_CHANNEL_ID}"
@@ -471,12 +446,17 @@ def main():
             print(f"Отправляем {len(candidates)} кандидатов на оценку ИИ...")
             best_news = pick_most_important(candidates)
             
+            # Если ИИ затупил и вернул None, но кандидаты есть - берем первого!
+            if not best_news and candidates:
+                print("⚠️ ИИ не выбрал, берем первого кандидата принудительно.")
+                best_news = candidates[0]
+
             if best_news:
                 print(f"✅ Выбрана новость: {best_news['title']}")
                 post_body = rewrite_with_ai(best_news['title'], best_news['summary'], theme)
                 
+                # Если нейросеть вернула пустоту - сработает страховка внутри rewrite_with_ai
                 if post_body is None:
-                    print("❌ Новость отклонена (нет конкретики). Ищем дальше...")
                     continue
 
                 print(f"Сгенерированный текст:\n{post_body}\n")
@@ -491,10 +471,7 @@ def main():
                     
                     if best_news.get('media_url'):
                         save_posted_image(best_news['media_url'])
-                        print("Картинка добавлена в историю.")
                         
-                    print("Состояние сохранено.")
-                    
                     vk_result = send_to_vk(post_body, best_news['media_type'], best_news['media_url'])
                     print(f"ВКонтакте: {'OK' if vk_result else 'FAIL'}")
                     
@@ -503,8 +480,6 @@ def main():
                     
                     print(f"\n🎉 Готово! Следующая тема: {theme}")
                     return
-            else:
-                 print("ИИ отклонил всех кандидатов. Ищем в следующей теме.")
 
     print("\n❌ Не удалось найти подходящих новостей.")
     sys.exit(0)
