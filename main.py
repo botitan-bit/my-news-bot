@@ -7,9 +7,13 @@ import html
 import time
 import io
 import vk_api
+import urllib3
 from vk_api.upload import VkUpload
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
+
+# Отключаем предупреждения об отключении SSL (для MAX)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -250,7 +254,6 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
-    # 👇 ИСПРАВЛЕННЫЙ ПРОМПТ: Запрещаем писать категории и требуем правильный формат
     prompt = f"""Ты — профессиональный редактор. Перепиши новость кратко и по делу.
 КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО упоминать источники (сайты) и писать служебные слова (например, "Рубрика:", "Категория:").
 
@@ -267,7 +270,6 @@ def rewrite_with_ai(title, summary, theme):
     if not raw_text: 
         raw_text = f"<b>{title}</b>\n\n{summary}"
         
-    # Удаляем случайно оставленные нейросетью "Category:" или "Рубрика:"
     raw_text = re.sub(r'^(Category|Рубрика|Категория):.*?\n', '', raw_text, flags=re.IGNORECASE)
     
     clean_patterns = [
@@ -348,7 +350,7 @@ def send_to_vk(text, media_type, media_url):
     print("Отправляем пост во ВКонтакте...")
     
     if not VK_TOKEN.startswith("vk1.a"):
-        print("ВК: Токен не начинается с 'vk1.a'. Возможно, вы вставили токен группы, а не пользовательский. Фото не загрузится.")
+        print("ВК: Токен не начинается с 'vk1.a'. Фото не загрузится, будет только текст.")
 
     clean_text = re.sub(r'<[^>]+>', '', text)
     clean_text = clean_text.replace('&quot;', '"').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').strip()
@@ -359,22 +361,36 @@ def send_to_vk(text, media_type, media_url):
         attachments = ""
         
         if POST_PHOTO_TO_VK and media_type == 'image' and media_url:
+            # 👇 УВЕЛИЧЕННАЯ ПАУЗА ПЕРЕД ЗАГРУЗКОЙ ФОТО
+            print("ВК: Ждем 5 секунд перед загрузкой фото...")
+            time.sleep(5) 
+            
             try:
                 img_data = requests.get(media_url, timeout=30).content
                 upload = VkUpload(vk_session)
                 photo = upload.photo_wall(io.BytesIO(img_data), group_id=int(VK_GROUP_ID))[0]
                 attachments = f"photo{photo['owner_id']}_{photo['id']}"
-                time.sleep(2)
+                print("ВК: Фото успешно загружено.")
             except Exception as e:
                 print(f"ВК: Ошибка загрузки фото -> {e}")
+                # 👇 ПОВТОРНАЯ ПОПЫТКА ПРИ FLOOD CONTROL
+                if "Flood control" in str(e):
+                    print("ВК: Flood control при загрузке фото. Ждем 15 секунд и пробуем снова...")
+                    time.sleep(15)
+                    try:
+                        img_data = requests.get(media_url, timeout=30).content
+                        upload = VkUpload(vk_session)
+                        photo = upload.photo_wall(io.BytesIO(img_data), group_id=int(VK_GROUP_ID))[0]
+                        attachments = f"photo{photo['owner_id']}_{photo['id']}"
+                        print("ВК: Фото успешно загружено со второй попытки.")
+                    except Exception as retry_e:
+                        print(f"ВК: Повторная ошибка загрузки фото -> {retry_e}. Постим только текст.")
         
         vk.wall.post(owner_id=f"-{VK_GROUP_ID}", message=clean_text, attachments=attachments, from_group=1)
         print("✅ ВК: Успешно опубликовано!")
         return True
     except Exception as e:
         print(f"❌ ВК Ошибка: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            print("Ответ сервера ВК:", e.response.text)
         return False
 
 def send_to_max(text, media_type, media_url):
@@ -404,7 +420,8 @@ def send_to_max(text, media_type, media_url):
         payload["attachments"] = attachments
 
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        # 👇 ОТКЛЮЧАЕМ ПРОВЕРКУ СЕРТИФИКАТА ДЛЯ MAX (verify=False)
+        response = requests.post(url, headers=headers, json=payload, timeout=30, verify=False)
         response.raise_for_status()
         print("✅ MAX: Успешно опубликовано!")
         return True
