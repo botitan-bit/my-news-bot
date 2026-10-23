@@ -28,15 +28,12 @@ POST_PHOTO_TO_VK = True
 RSS_FEEDS = [
     "https://lenta.ru/rss/news",
     "https://ria.ru/export/rss2/archive/index.xml",
-    "https://tass.ru/rss/v2.xml",
     "https://www.mk.ru/rss/index.xml",
-    "https://www.kp.ru/rss/allsections.xml",
-    "https://www.gazeta.ru/export/rss/lenta.xml",
     "https://life.ru/rss.xml",
     "https://ren.tv/rss",
-    "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=mchs_official&format=Atom",
-    "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=mvd_official&format=Atom",
-    "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=fsb_official&format=Atom",
+    "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=mash&format=Atom",
+    "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=bazabazon&format=Atom",
+    "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=shot_shot&format=Atom",
 ]
 
 SIGNATURE_TG = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
@@ -68,7 +65,8 @@ BLACKLIST_WORDS = [
     "спорт", "гонщик", "гонка", "автоспорт", "футбол", "хоккей", "олимпиад", "чемпионат", "турнир", "матч", "клуб", "тренер",
     "шоу-бизнес", "актер", "актриса", "певец", "певица", "звезда", "сериал", "фильм", "премьера", "инстаграм", "тикток",
     "спектакль", "ледовый", "фигурист", "авербух", "петросян", "концерт", "развлечение", "шоу", "праздник", "фестиваль", "выступление",
-    "продолжают спецоперацию", "выполняют задачи", "боевая готовность", "полная готовность", "активные действия", "выполняют боевые задачи", "решают задачи", "контроль над ситуацией"
+    "продолжают спецоперацию", "выполняют задачи", "боевая готовность", "полная готовность", "активные действия", "выполняют боевые задачи", "решают задачи", "контроль над ситуацией",
+    "автобус", "маршрутка"
 ]
 
 def get_posted_links():
@@ -135,19 +133,33 @@ def get_media_from_entry(entry, feed_url):
             url = media.get('url', '')
             if url:
                 url = urljoin(feed_url, url)
-                if media.get('medium') == 'image' or 'image' in media.get('type', ''): return 'image', url
                 if media.get('medium') == 'video' or 'video' in media.get('type', ''): return 'video', url
+                if media.get('medium') == 'image' or 'image' in media.get('type', ''): return 'image', url
 
     if 'media_thumbnail' in entry:
         for thumb in entry.media_thumbnail:
             url = thumb.get('url', '')
-            if url: return 'image', urljoin(feed_url, url)
+            if url: 
+                pass
 
     html_to_search = ""
     if 'content' in entry:
         for content_block in entry.content:
             html_to_search += content_block.get('value', '')
     html_to_search += entry.get('summary', entry.get('description', ''))
+
+    vid_match = re.search(r'(https?://[^\s"<>]+\.mp4)', html_to_search)
+    if vid_match:
+        return 'video', vid_match.group(1)
+        
+    vid_tag_match = re.search(r'<video[^>]+src="([^">]+)"', html_to_search)
+    if vid_tag_match:
+        return 'video', urljoin(feed_url, vid_tag_match.group(1))
+
+    if 'media_thumbnail' in entry:
+        for thumb in entry.media_thumbnail:
+            url = thumb.get('url', '')
+            if url: return 'image', urljoin(feed_url, url)
 
     img_match = re.search(r'<img[^>]+src="([^">]+)"', html_to_search)
     if img_match:
@@ -239,12 +251,19 @@ def get_news_candidates(theme):
             
     print(f"Собрано всего новостей: {len(all_entries)}")
     
-    c = [e for e in all_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match']]
-    if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
+    # 🎥 1. ЖЕСТКИЙ ПРИОРИТЕТ ВИДЕО: Если есть видео (до 6ч) - берем ТОЛЬКО его!
+    c_video = [e for e in all_entries if e['age_hours'] <= 6 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'video']
+    if c_video:
+        print(f"🔥 Найдено {len(c_video)} новостей с ВИДЕО (до 6ч)! Отдаем приоритет видео.")
+        return sorted(c_video, key=lambda e: e['age_hours'])[:5]
+
+    # 🖼️ 2. Если видео нет, ищем картинки (ТОЛЬКО до 6 часов)
+    c_img_6 = [e for e in all_entries if e['age_hours'] <= 6 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
+    if c_img_6: 
+        print(f"Видео не найдено. Берем {len(c_img_6)} новостей с картинками (до 6ч).")
+        return sorted(c_img_6, key=lambda e: e['age_hours'])[:5]
     
-    c = [e for e in all_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match']]
-    if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
-    
+    print("Нет новостей моложе 6 часов.")
     return []
 
 def call_groq(prompt):
@@ -274,19 +293,14 @@ def pick_most_important(candidates):
     if recent_titles:
         history_text = "УЖЕ ОПУБЛИКОВАНО РАНЕЕ:\n" + "\n".join(recent_titles) + "\n"
     
-    # 👇 ДОБАВИЛИ ФИЛЬТР МАСШТАБА (Игнорируем мелкие пожары и деревенские ДТП)
     prompt = f"""Ты — редактор жесткого новостного канала. Выбери ОДИН самый интересный, конкретный или трагичный заголовок из списка.
 КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выбирать новости про шоу-бизнес, актеров, фигуристов, спектакли, концерты, спорт или развлечения.
-
-Также ИГНОРИРУЙ мелкие бытовые происшествия:
-- Сгорел один частный дом или баня в деревне.
-- Мелкое ДТП без жертв или с одним пострадавшим.
-- Бытовые ссоры или кражи телефонов.
-Нам нужны новости с МАСШТАБОМ: жертвы, взрывы, крупные аварии, бандитские разборки, ЧП на заводах, крупные лесные пожары.
+ИГНОРИРУЙ обычные бытовые аварии (например, столкновение автобуса и грузовика с пострадавшими).
+Ищи только КРУПНЫЕ события: смертельные ДТП, взрывы, бандитские перестрелки, обрушения зданий, теракты.
 
 {history_text}
 
-Если ВСЕ новости в списке не подходят под критерии масштаба, ответь NONE.
+Если ВСЕ новости в списке не подходят под критерии масштаба (или это скучные аварии), ответь NONE.
 В противном случае ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}).
 
 Список:
@@ -312,10 +326,9 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
-    # 👇 ЗАПРЕТ НА АНГЛИЙСКИЙ ЯЗЫК И МЕЛКИЕ СОБЫТИЯ
     prompt = f"""Ты — профессиональный редактор. Перепиши новость так, чтобы она была понятной, цепляющей и ТОЛЬКО НА РУССКОМ ЯЗЫКЕ.
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ любые английские слова (никаких "extinguished fire", "breaking news" и т.д.).
-Если в исходном тексте ТОЛЬКО общие фразы или ШОУ-БИЗНЕС, напиши слово NONE.
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ любые английские слова.
+Если в исходном тексте ТОЛЬКО общие фразы, напиши слово NONE.
 
 Формат ответа:
 1. Заголовок в теге <b>...</b>. Сделай его громким и понятным.
@@ -339,10 +352,9 @@ def rewrite_with_ai(title, summary, theme):
     raw_text = raw_text.replace('\\n', '\n')
     raw_text = raw_text[:900]
     
-    # 👇 ПРОВЕРКА НА АНГЛИЙСКИЕ БУКВЫ (Если ИИ все равно накосячил)
     plain_body = re.sub(r'<[^>]+>', '', raw_text)
     if re.search(r'[a-zA-Z]', plain_body):
-        print("❌ Отклонено: в тексте обнаружены английские буквы (сбой ИИ).")
+        print("❌ Отклонено: в тексте обнаружены английские буквы.")
         return None
 
     if len(plain_body.strip()) < 40:
@@ -371,6 +383,14 @@ def send_video(video_url, caption):
     payload = {"chat_id": TELEGRAM_CHANNEL_ID, "video": video_url, "caption": caption, "parse_mode": "HTML", "supports_streaming": True}
     try:
         r = requests.post(url, json=payload, timeout=10)
+        if r.status_code == 200: return True
+    except: pass
+    try:
+        video_data = requests.get(video_url, timeout=15).content
+        if len(video_data) > 50 * 1024 * 1024: return False
+        files = {'video': ('video.mp4', video_data)}
+        data = {"chat_id": TELEGRAM_CHANNEL_ID, "caption": caption, "parse_mode": "HTML", "supports_streaming": True}
+        r = requests.post(url, data=data, files=files, timeout=15)
         if r.status_code == 200: return True
     except: pass
     return False
