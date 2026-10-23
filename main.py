@@ -43,9 +43,11 @@ THEMES = {
 }
 THEME_ORDER = ["Политика", "СВО", "Мигранты", "Происшествия"]
 
-PRIMARY_MODEL = "openrouter/free"
-# 👇 ЗАМЕНИЛИ УДАЛЕННУЮ МОДЕЛЬ НА СТАБИЛЬНУЮ QWEN
-FALLBACK_MODEL = "qwen/qwen-2.5-72b-instruct:free"
+MODELS = [
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "google/gemma-2-9b-it:free",
+    "mistralai/mistral-7b-instruct:free"
+]
 
 RUSSIA_KEYWORDS = [
     "росси", "рф", "путин", "кремл", "москв", "петербург", "ленинград", "курск", "белгород", 
@@ -212,7 +214,7 @@ def call_openrouter(prompt):
         "HTTP-Referer": "https://github.com/",
         "X-Title": "News Bot",
     }
-    for model in [PRIMARY_MODEL, FALLBACK_MODEL]:
+    for model in MODELS:
         payload = {"model": model, "messages": [{"role": "user", "content": prompt}]}
         try:
             response = requests.post(url, headers=headers, json=payload, timeout=60)
@@ -225,26 +227,33 @@ def call_openrouter(prompt):
 def pick_most_important(candidates):
     if not candidates: return None
     titles_list = "\n".join([f"{i}. {c['title']}" for i, c in enumerate(candidates)])
-    prompt = f"""Ты главный редактор новостного канала про Россию.
-Выбери ОДИН самый важный заголовок, который касается РОССИИ.
+    
+    prompt = f"""Ты главный редактор серьезного новостного канала про Россию.
+Выбери ОДИН самый важный заголовок из списка. 
 
-ПРАВИЛА:
-- Если есть хотя бы одна новость про РФ — ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}).
-- Если ВСЕ новости про другие страны — ответь словом NONE.
+КАТЕГОРИЧЕСКИ ИГНОРИРУЙ:
+- Спорт, пиво, стадионы.
+- Шоу-бизнес, знаменитостей, светские хроники.
+- Мелкие бытовые новости.
+
+ВЫБИРАЙ ТОЛЬКО:
+- Геополитику, крупные политические заявления.
+- Ход СВО, крупные военные сводки.
+- Серьезные экономические события.
+- Крупные катастрофы или ЧП.
+
+Ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}).
 
 Список:
 {titles_list}"""
     
     answer = call_openrouter(prompt).strip()
-    if 'NONE' in answer.upper():
-        return None
     match = re.search(r'\d+', answer)
     if match:
         idx = int(match.group())
         if 0 <= idx < len(candidates): return candidates[idx]
-    for c in candidates:
-        if is_russia_related(f"{c['title']} {c['summary']}"):
-            return c
+    
+    print("❌ ИИ не смог выбрать новость (вероятно, лимиты). Пропускаем запуск.")
     return None
 
 def sanitize_html(text):
@@ -255,7 +264,7 @@ def sanitize_html(text):
 
 def rewrite_with_ai(title, summary, theme):
     prompt = f"""Ты — профессиональный редактор. Перепиши новость кратко и по делу.
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО упоминать источники (сайты) и писать служебные слова (например, "Рубрика:", "Категория:").
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО упоминать источники (сайты) и писать служебные слова.
 
 Требования:
 1. Твой ответ должен начинаться СРАЗУ с заголовка, обернутого в тег <b>...</b>.
@@ -267,8 +276,9 @@ def rewrite_with_ai(title, summary, theme):
 Исходный текст: {summary}
 """
     raw_text = call_openrouter(prompt)
-    if not raw_text: 
-        raw_text = f"<b>{title}</b>\n\n{summary}"
+    
+    if not raw_text:
+        return None
         
     raw_text = re.sub(r'^(Category|Рубрика|Категория):.*?\n', '', raw_text, flags=re.IGNORECASE)
     
@@ -349,7 +359,6 @@ def send_to_vk(text, media_type, media_url):
         
     print("Отправляем пост во ВКонтакте...")
     
-    # 👇 Очищаем теги и кавычки для ВК
     clean_text = re.sub(r'<[^>]+>', '', text)
     clean_text = html.unescape(clean_text).strip()
     
@@ -381,8 +390,8 @@ def send_to_max(text, media_type, media_url):
         
     print("Отправляем пост в MAX...")
     
-    # 👇 Очищаем теги и кавычки для MAX
-    clean_text = re.sub(r'<[^>]+>', '', text)
+    # 👇 МЕНЯЕМ HTML-ТЕГИ НА MARKDOWN ЗВЕЗДОЧКИ
+    clean_text = text.replace('<b>', '**').replace('</b>', '**')
     clean_text = html.unescape(clean_text).strip()
     
     url = f"https://platform-api2.max.ru/messages?chat_id={MAX_CHANNEL_ID}"
@@ -400,7 +409,11 @@ def send_to_max(text, media_type, media_url):
             }
         })
     
-    payload = {"text": clean_text}
+    # 👇 ОТПРАВЛЯЕМ В ФОРМАТЕ MARKDOWN
+    payload = {
+        "text": clean_text,
+        "format": "markdown"
+    }
     if attachments:
         payload["attachments"] = attachments
 
@@ -411,6 +424,8 @@ def send_to_max(text, media_type, media_url):
         return True
     except Exception as e:
         print(f"❌ MAX Ошибка: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print("Ответ сервера MAX:", e.response.text)
         return False
 
 def main():
