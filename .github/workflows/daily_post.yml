@@ -32,7 +32,7 @@ jobs:
       - name: Run the bot script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}    # 👈 ДОБАВИЛИ НОВУЮ СТРОКУ
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           VK_TOKEN: ${{ secrets.VK_TOKEN }}
@@ -45,7 +45,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add last_theme.txt posted_news.txt
+          # 👇 ДОБАВЛЕНЫ ФАЙЛЫ published_titles.txt и posted_images.txt
+          git add last_theme.txt posted_news.txt published_titles.txt posted_images.txt
           git commit -m "Update bot state [skip ci]" || echo "No changes to commit"
           git pull --rebase origin main || true
           for i in 1 2 3; do
