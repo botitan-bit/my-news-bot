@@ -46,10 +46,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # 👇 ГАРАНТИРУЕМ, ЧТО ФАЙЛЫ СУЩЕСТВУЮТ ПЕРЕД СОХРАНЕНИЕМ
-          touch last_theme.txt posted_news.txt published_titles.txt posted_images.txt posted_videos.txt
+          # 👇 ДОБАВЛЕН posted_hashes.txt
+          touch last_theme.txt posted_news.txt published_titles.txt posted_images.txt posted_videos.txt posted_hashes.txt
           
-          git add last_theme.txt posted_news.txt published_titles.txt posted_images.txt posted_videos.txt
+          git add last_theme.txt posted_news.txt published_titles.txt posted_images.txt posted_videos.txt posted_hashes.txt
           git commit -m "Update bot state [skip ci]" || echo "No changes to commit"
           git pull --rebase origin main || true
           for i in 1 2 3; do
