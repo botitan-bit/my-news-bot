@@ -165,9 +165,8 @@ def get_tg_web_videos(channel_name, theme, now):
         soup = BeautifulSoup(resp.text, "html.parser")
         posts = soup.select(".tgme_widget_message[data-post]")
         
-        # 👇 ОТЛАДКА: Сколько постов всего на странице
         if not posts:
-            print(f"  [{channel_name}] Постов не найдено (возможно, канал закрыт или изменилась верстка).")
+            print(f"  [{channel_name}] Постов не найдено.")
             return []
         
         print(f"  [{channel_name}] Всего постов на странице: {len(posts)}")
@@ -175,18 +174,15 @@ def get_tg_web_videos(channel_name, theme, now):
         for post in reversed(posts):
             video_url = None
             
-            # 1. Ищем через тег <video>
             video_tag = post.select_one("video[src]")
             if video_tag and video_tag.get("src"):
                 video_url = video_tag.get("src")
             
-            # 2. Если нет, ищем через ссылку плеера
             if not video_url:
                 video_link = post.select_one("a.tgme_widget_message_video_player")
                 if video_link and video_link.get("href"):
                     video_url = video_link.get("href")
             
-            # 3. Если нет, ищем в стиле превью
             if not video_url:
                 video_thumb = post.select_one("i.tgme_widget_message_video_thumb")
                 if video_thumb and video_thumb.get("style"):
@@ -420,9 +416,11 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
+    # 👇 ДОБАВИЛИ ПРАВИЛО ПРО ОПЕЧАТКИ
     prompt = f"""Ты — профессиональный редактор. Перепиши новость так, чтобы она была понятной, цепляющей и ТОЛЬКО НА РУССКОМ ЯЗЫКЕ.
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ любые английские слова и фразы вроде "ожидается прямой эфир" или "смотрите трансляцию".
-Если в исходном тексте ТОЛЬКО общие фразы или обещания эфира, напиши слово NONE.
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ любые английские слова и фразы вроде "ожидается прямой эфир".
+ВНИМАТЕЛЬНО ПРОВЕРЯЙ СЛОВА. Не заменяй правильные слова на похожие по звучанию (например, не пиши "рейс" вместо "рейд").
+Если в исходном тексте ТОЛЬКО общие фразы, напиши слово NONE.
 
 Формат ответа:
 1. Заголовок в теге <b>...</b>. Сделай его громким и понятным.
