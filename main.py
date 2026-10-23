@@ -8,6 +8,7 @@ import time
 import io
 import vk_api
 import urllib3
+import hashlib
 from bs4 import BeautifulSoup
 from vk_api.upload import VkUpload
 from urllib.parse import urljoin
@@ -117,10 +118,10 @@ def get_posted_videos():
             return f.read().splitlines()
     return []
 
-def save_posted_video(url):
-    if not url: return
+def save_posted_video(video_hash):
+    if not video_hash: return
     with open("posted_videos.txt", "a", encoding="utf-8") as f:
-        f.write(url + "\n")
+        f.write(video_hash + "\n")
 
 def get_recent_titles():
     if os.path.exists("published_titles.txt"):
@@ -212,6 +213,7 @@ def get_tg_web_videos(channel_name, theme, now):
             if video_url.startswith("//"):
                 video_url = "https:" + video_url
             
+            # 👇 ПРОВЕРКА НА ДУБЛЬ ПО URL ВИДЕО
             if video_url in posted_videos:
                 continue
             
@@ -374,6 +376,9 @@ def rewrite_with_ai(title, summary, theme):
 
     return sanitize_html(raw_text)
 
+def get_video_hash(video_data):
+    return hashlib.md5(video_data).hexdigest()
+
 def send_video(video_url, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
     payload = {"chat_id": TELEGRAM_CHANNEL_ID, "video": video_url, "caption": caption, "parse_mode": "HTML", "supports_streaming": True}
@@ -382,13 +387,32 @@ def send_video(video_url, caption):
         if r.status_code == 200: return True
     except: pass
     try:
-        video_data = requests.get(video_url, timeout=15).content
-        if len(video_data) > 50 * 1024 * 1024: return False
-        files = {'video': ('video.mp4', video_data)}
+        # 👇 ДОБАВИЛИ ЗАГОЛОВКИ ДЛЯ СКАЧИВАНИЯ ВИДЕО
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            'Referer': 'https://t.me/'
+        }
+        video_data = requests.get(video_url, headers=headers, timeout=30).content
+        
+        if len(video_data) == 0:
+            print("  ❌ Скачалось пустое видео (0 байт).")
+            return False
+            
+        if len(video_data) > 50 * 1024 * 1024: 
+            print("  ❌ Видео больше 50 МБ для Telegram.")
+            return False
+            
+        video_hash = get_video_hash(video_data)
+        
+        files = {'video': ('video.mp4', video_data, 'video/mp4')}
         data = {"chat_id": TELEGRAM_CHANNEL_ID, "caption": caption, "parse_mode": "HTML", "supports_streaming": True}
-        r = requests.post(url, data=data, files=files, timeout=15)
-        if r.status_code == 200: return True
-    except: pass
+        r = requests.post(url, data=data, files=files, timeout=30)
+        if r.status_code == 200: 
+            # 👇 СОХРАНЯЕМ ХЕШ ВИДЕО
+            save_posted_video(video_hash)
+            return True
+    except Exception as e:
+        print(f"  ⚠️ Ошибка скачивания/отправки видео в TG: {e}")
     return False
 
 def send_to_telegram(text, media_type, media_url):
@@ -442,8 +466,17 @@ def send_to_max(text, media_type, media_url):
     try:
         if media_type == 'video' and media_url:
             print("  -> Скачиваем видео для MAX...")
-            video_data = requests.get(media_url, timeout=30).content
+            # 👇 ДОБАВИЛИ ЗАГОЛОВКИ ДЛЯ СКАЧИВАНИЯ
+            download_headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                'Referer': 'https://t.me/'
+            }
+            video_data = requests.get(media_url, headers=download_headers, timeout=60).content
             
+            if len(video_data) == 0:
+                print("  ❌ Скачалось пустое видео (0 байт), пропускаем.")
+                return False
+                
             if len(video_data) > 250 * 1024 * 1024:
                 print("  ❌ Видео больше 250 МБ, MAX его не примет.")
                 return False
@@ -467,7 +500,6 @@ def send_to_max(text, media_type, media_url):
             
             print(f"  -> Загружаем видео в MAX (размер: {len(video_data) // (1024*1024)} МБ)...")
             
-            # 👇 ИСПРАВЛЕНИЕ: Убираем Content-Type, requests сам сгенерирует boundary
             upload_headers = {
                 "Authorization": MAX_BOT_TOKEN
             }
@@ -476,7 +508,7 @@ def send_to_max(text, media_type, media_url):
                 upload_url,
                 headers=upload_headers,
                 files={'data': ('video.mp4', video_data, 'video/mp4')},
-                timeout=120 
+                timeout=180 
             )
             
             if upload_resp.status_code not in [200, 201]:
@@ -485,7 +517,7 @@ def send_to_max(text, media_type, media_url):
                 return False
                 
             print("  ✅ Видео загружено. Ждем обработки на сервере MAX...")
-            time.sleep(15) # 👈 УВЕЛИЧИЛИ ПАУЗУ ДО 15 СЕКУНД
+            time.sleep(5) 
             
             attachments.append({
                 "type": "video",
@@ -506,23 +538,38 @@ def send_to_max(text, media_type, media_url):
     if attachments:
         payload["attachments"] = attachments
 
-    # 👇 ДОБАВИЛИ ЦИКЛ ПОВТОРНЫХ ПОПЫТОК ПРИ ОШИБКЕ "attachment.not.ready"
-    for attempt in range(3):
+    # 👇 УЛУЧШЕННЫЙ ЦИКЛ ПОВТОРНЫХ ПОПЫТОК
+    max_retries = 3
+    for attempt in range(max_retries):
         try:
             url = f"https://platform-api2.max.ru/messages?chat_id={MAX_CHANNEL_ID}"
             response = requests.post(url, headers=headers, json=payload, timeout=20, verify=False)
-            response.raise_for_status()
-            print("✅ MAX: Успешно опубликовано!")
-            return True
-        except Exception as e:
-            error_text = str(e)
-            if "attachment.not.ready" in error_text and attempt < 2:
-                print(f"  ⏳ Файл ещё не обработан (попытка {attempt+1}/3). Ждем 10 секунд...")
-                time.sleep(10)
+            
+            if response.status_code == 200:
+                print("✅ MAX: Успешно опубликовано!")
+                return True
+            elif response.status_code == 400:
+                error_data = response.json()
+                if error_data.get("code") == "attachment.not.ready":
+                    if attempt < max_retries - 1:
+                        wait_time = (attempt + 1) * 5  # 5, 10, 15 секунд
+                        print(f"  ⏳ Файл ещё не обработан (попытка {attempt+1}/{max_retries}). Ждем {wait_time} секунд...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        print(f"  ❌ Файл так и не обработался после {max_retries} попыток.")
+                        return False
+                else:
+                    print(f"  ❌ Ошибка MAX: {error_data}")
+                    return False
             else:
-                print(f"❌ MAX Ошибка: {e}")
-                if hasattr(e, 'response') and e.response is not None:
-                    print("Ответ сервера MAX:", e.response.text)
+                response.raise_for_status()
+                
+        except Exception as e:
+            print(f"  ❌ Ошибка отправки в MAX (попытка {attempt+1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(5)
+            else:
                 return False
     return False
 
@@ -566,9 +613,6 @@ def main():
                     save_published_title(best_news['title'])
                     save_posted_hash(best_news['text_hash'])
                     
-                    if best_news.get('media_url'):
-                        save_posted_video(best_news['media_url'])
-                        
                     vk_result = send_to_vk(post_body, best_news['media_type'], best_news['media_url'])
                     print(f"ВКонтакте: {'OK' if vk_result else 'FAIL'}")
                     
