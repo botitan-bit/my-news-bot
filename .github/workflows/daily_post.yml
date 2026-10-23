@@ -2,7 +2,6 @@ name: Daily Telegram Post
 
 on:
   schedule:
-    # 👇 ИЗМЕНЕНО НА КАЖДЫЕ 2 ЧАСА (12 раз в сутки)
     - cron: '0 */2 * * *'
   workflow_dispatch:
   push:
@@ -33,6 +32,7 @@ jobs:
       - name: Run the bot script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}    # 👈 ДОБАВИЛИ НОВУЮ СТРОКУ
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           VK_TOKEN: ${{ secrets.VK_TOKEN }}
@@ -47,18 +47,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add last_theme.txt posted_news.txt
           git commit -m "Update bot state [skip ci]" || echo "No changes to commit"
-          
-          # Синхронизация перед пушем
           git pull --rebase origin main || true
-          
-          # 3 попытки пуша
           for i in 1 2 3; do
-            if git push; then
-              echo "Push successful"
-              break
-            else
-              echo "Push attempt $i failed, retrying..."
-              git pull --rebase origin main || true
-              sleep 3
-            fi
+            if git push; then break; else sleep 3; git pull --rebase origin main || true; fi
           done
