@@ -178,6 +178,13 @@ def get_tg_web_videos(channel_name, theme, now):
         
         if not posts:
             return []
+            
+        print(f"  [{channel_name}] Найдено постов: {len(posts)}")
+        
+        count_video_tags = 0
+        count_blacklisted = 0
+        count_not_russia = 0
+        count_not_theme = 0
         
         for post in reversed(posts):
             video_url = None
@@ -200,6 +207,8 @@ def get_tg_web_videos(channel_name, theme, now):
             
             if not video_url:
                 continue
+                
+            count_video_tags += 1
             
             if video_url.startswith("//"):
                 video_url = "https:" + video_url
@@ -222,9 +231,15 @@ def get_tg_web_videos(channel_name, theme, now):
             post_id = post.get("data-post", "")
             post_link = f"https://t.me/{post_id}"
             
-            if is_blacklisted(clean_text): continue
-            if not is_russia_related(clean_text): continue
-            if not is_theme_match(clean_text, theme): continue
+            if is_blacklisted(clean_text): 
+                count_blacklisted += 1
+                continue
+            if not is_russia_related(clean_text): 
+                count_not_russia += 1
+                continue
+            if not is_theme_match(clean_text, theme): 
+                count_not_theme += 1
+                continue
             
             videos.append({
                 "title": clean_text[:60] + "...",
@@ -239,8 +254,11 @@ def get_tg_web_videos(channel_name, theme, now):
                 "has_media": True
             })
         
+        if len(videos) == 0:
+            print(f"  [{channel_name}] С видео: {count_video_tags} | Блэклист: {count_blacklisted} | Не РФ: {count_not_russia} | Не тема: {count_not_theme}")
+        
     except Exception as e:
-        pass
+        print(f"Ошибка парсинга {channel_name}: {e}")
     return videos
 
 def get_news_candidates(theme):
@@ -259,7 +277,6 @@ def get_news_candidates(theme):
         print(f"🔥 Найдено {len(tg_videos)} ВИДЕО в веб-версиях Telegram!")
         return tg_videos[:5]
 
-    # 👇 ЕСЛИ ВИДЕО НЕТ, ВОЗВРАЩАЕМ ПУСТОЙ СПИСОК (КАРТИНКИ ОТКЛЮЧЕНЫ)
     print("  ❌ Видео не найдено. Пропускаем запуск (картинки отключены).")
     return []
 
