@@ -43,11 +43,12 @@ THEMES = {
 }
 THEME_ORDER = ["Политика", "СВО", "Мигранты", "Происшествия"]
 
-# 👇 ОБНОВЛЕННЫЙ СПИСОК РАБОЧИХ МОДЕЛЕЙ
+# 👇 ОБНОВЛЕННЫЙ СПИСОК АКТУАЛЬНЫХ БЕСПЛАТНЫХ МОДЕЛЕЙ
 MODELS = [
-    "recursive/flint-v1.0:free",
-    "openrouter/free",
-    "meta-llama/llama-3.1-8b-instruct:free"
+    "qwen/qwen3.6-plus:free",             # Отлично понимает русский
+    "minimax/minimax-m2.5:free",          # Быстрая и стабильная
+    "meta-llama/llama-3.3-70b-instruct:free", # Надежный запасной вариант
+    "openrouter/free"                     # Автоматический подбор
 ]
 
 RUSSIA_KEYWORDS = [
@@ -215,14 +216,32 @@ def call_openrouter(prompt):
         "HTTP-Referer": "https://github.com/",
         "X-Title": "News Bot",
     }
+    
     for model in MODELS:
         payload = {"model": model, "messages": [{"role": "user", "content": prompt}]}
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=60)
-            response.raise_for_status()
-            return response.json()['choices'][0]['message']['content'].strip()
-        except Exception as e:
-            print(f"⚠️ Ошибка модели {model}: {e}")
+        
+        # 👇 ДЕЛАЕМ 3 ПОПЫТКИ ДЛЯ КАЖДОЙ МОДЕЛИ
+        for attempt in range(3):
+            try:
+                response = requests.post(url, headers=headers, json=payload, timeout=60)
+                response.raise_for_status()
+                return response.json()['choices'][0]['message']['content'].strip()
+                
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 429:
+                    # Если сработал минутный лимит, ждем и пробуем снова
+                    print(f"⏳ Модель {model} достигла лимита (429). Ждем 20 секунд и пробуем снова (попытка {attempt+1}/3)...")
+                    time.sleep(20)
+                elif e.response.status_code == 404:
+                    print(f"❌ Модель {model} не найдена (404). Пробуем следующую...")
+                    break # Переходим к следующей модели
+                else:
+                    print(f"⚠️ Ошибка модели {model}: {e}")
+                    time.sleep(5)
+            except Exception as e:
+                print(f"⚠️ Ошибка соединения: {e}")
+                time.sleep(5)
+                
     return ""
 
 def pick_most_important(candidates):
@@ -410,7 +429,6 @@ def send_to_max(text, media_type, media_url):
             }
         })
     
-    # 👇 ОТПРАВЛЯЕМ В ФОРМАТЕ MARKDOWN
     payload = {
         "text": clean_text,
         "format": "markdown"
