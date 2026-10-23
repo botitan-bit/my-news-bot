@@ -85,11 +85,9 @@ def ensure_state_files_exist():
             open(file, 'a').close()
 
 def get_text_hash(text):
-    """Создает уникальный отпечаток текста для защиты от дублей."""
-    clean_text = re.sub(r'[^\w\s]', '', text.lower()) # Убираем пунктуацию
+    clean_text = re.sub(r'[^\w\s]', '', text.lower())
     words = clean_text.split()
-    # Берем первые 10 слов (обычно этого достаточно для идентификации новости)
-    return " ".join(words[:10]) 
+    return " ".join(words[:10])
 
 def get_posted_hashes():
     if os.path.exists("posted_hashes.txt"):
@@ -241,7 +239,6 @@ def get_tg_web_videos(channel_name, theme, now):
             if len(clean_text) < 20:
                 continue
                 
-            # 👇 ПРОВЕРКА НА СМЫСЛОВОЙ ДУБЛЬ
             text_hash = get_text_hash(clean_text)
             if text_hash in posted_hashes:
                 continue
@@ -299,7 +296,6 @@ def process_feeds(feed_list, theme, posted_links, posted_images, posted_hashes, 
                 if len(summary_clean) < 20: continue
                 if is_blacklisted(f"{title} {summary_clean}"): continue
                 
-                # 👇 ПРОВЕРКА НА СМЫСЛОВОЙ ДУБЛЬ
                 full_raw_text = f"{title} {summary_clean}"
                 text_hash = get_text_hash(full_raw_text)
                 if text_hash in posted_hashes:
@@ -586,25 +582,79 @@ def send_to_max(text, media_type, media_url):
     clean_text = html.unescape(clean_text).strip()
     clean_text = f"{clean_text}\n\n{SIGNATURE_MAX}"
     
-    url = f"https://platform-api2.max.ru/messages?chat_id={MAX_CHANNEL_ID}"
-    headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
+    headers = {
+        "Authorization": MAX_BOT_TOKEN,
+        "Content-Type": "application/json"
+    }
     
     attachments = []
-    if media_type == 'image' and media_url:
-        attachments.append({"type": "image", "payload": {"url": media_url}})
-    elif media_type == 'video' and media_url:
-        attachments.append({"type": "video", "payload": {"url": media_url}})
     
+    try:
+        if media_type == 'video' and media_url:
+            # 1. Скачиваем видео
+            print("  -> Скачиваем видео для MAX...")
+            video_data = requests.get(media_url, timeout=30).content
+            
+            if len(video_data) > 250 * 1024 * 1024:
+                print("  ❌ Видео больше 250 МБ, MAX его не примет.")
+                return False
+            
+            # 2. Получаем URL для загрузки
+            print("  -> Запрашиваем URL для загрузки в MAX...")
+            upload_url_resp = requests.post(
+                "https://platform-api2.max.ru/uploads?type=video",
+                headers={"Authorization": MAX_BOT_TOKEN},
+                timeout=15,
+                verify=False
+            )
+            upload_url_resp.raise_for_status()
+            upload_data = upload_url_resp.json()
+            
+            upload_url = upload_data.get("url")
+            media_token = upload_data.get("token")
+            
+            if not upload_url or not media_token:
+                print("  ❌ MAX не вернул URL или токен для загрузки.")
+                return False
+            
+            # 3. Загружаем видео
+            print("  -> Загружаем видео в MAX...")
+            files = {'data': ('video.mp4', video_data)}
+            upload_resp = requests.post(upload_url, files=files, timeout=60)
+            upload_resp.raise_for_status()
+            
+            # 4. Добавляем вложение
+            attachments.append({
+                "type": "video",
+                "payload": {"token": media_token}
+            })
+            
+        elif media_type == 'image' and media_url:
+            # Для картинок MAX поддерживает прямые ссылки
+            attachments.append({
+                "type": "image",
+                "payload": {"url": media_url}
+            })
+    
+    except Exception as e:
+        print(f"  ⚠️ Ошибка подготовки медиа для MAX: {e}")
+        # Если не удалось подготовить медиа, отправляем только текст
+        attachments = []
+
     payload = {"text": clean_text, "format": "markdown"}
-    if attachments: payload["attachments"] = attachments
+    if attachments:
+        payload["attachments"] = attachments
 
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=15, verify=False)
+        url = f"https://platform-api2.max.ru/messages?chat_id={MAX_CHANNEL_ID}"
+        response = requests.post(url, headers=headers, json=payload, timeout=20, verify=False)
         response.raise_for_status()
         print("✅ MAX: Успешно опубликовано!")
         return True
     except Exception as e:
         print(f"❌ MAX Ошибка: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print("Ответ сервера MAX:", e.response.text)
         return False
 
 def main():
@@ -645,7 +695,7 @@ def main():
                     save_last_theme(theme)
                     save_posted_link(best_news['link'])
                     save_published_title(best_news['title'])
-                    save_posted_hash(best_news['text_hash']) # 👈 СОХРАНЯЕМ ОТПЕЧАТОК
+                    save_posted_hash(best_news['text_hash'])
                     
                     if best_news.get('media_url'):
                         if best_news['media_type'] == 'video':
