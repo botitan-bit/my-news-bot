@@ -20,7 +20,7 @@ VK_GROUP_ID = os.environ.get("VK_GROUP_ID", "").strip()
 MAX_BOT_TOKEN = os.environ.get("MAX_BOT_TOKEN", "").strip()
 MAX_CHANNEL_ID = os.environ.get("MAX_CHANNEL_ID", "").strip()
 
-POST_PHOTO_TO_VK = True
+POST_PHOTO_TO_VK = False
 
 RSS_FEEDS = [
     "https://lenta.ru/rss/news",
