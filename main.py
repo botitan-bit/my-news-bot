@@ -125,7 +125,6 @@ def is_russia_related(text):
     text_lower = text.lower()
     return any(kw in text_lower for kw in RUSSIA_KEYWORDS)
 
-# 👇 УМНЫЙ ПОИСК С 5 УРОВНЯМИ ФИЛЬТРАЦИИ
 def get_news_candidates(theme):
     posted_links = get_posted_links()
     now = datetime.now(timezone.utc)
@@ -143,13 +142,17 @@ def get_news_candidates(theme):
                     pub_date = datetime.fromtimestamp(pub_time, timezone.utc)
                     age_hours = (now - pub_date).total_seconds() / 3600
                 else:
-                    age_hours = 8.0  # Если даты нет, считаем "средней свежести"
+                    age_hours = 8.0
                 
                 title = entry.get("title", "")
                 summary = entry.get("summary", entry.get("description", ""))
                 summary_clean = re.sub(r'<[^>]+>', '', summary).strip()
                 
                 if is_old_news(title, summary): continue
+                
+                # 👇 ЕЩЕ БОЛЕЕ ЖЕСТКИЙ ФИЛЬТР: Если текста меньше 60 символов (почти нет сути), пропускаем
+                if len(summary_clean) < 60:
+                    continue
                 
                 media_type, media_url = get_media_from_entry(entry, feed_url)
                 full_text = f"{title} {summary}"
@@ -170,35 +173,20 @@ def get_news_candidates(theme):
     
     print(f"Собрано всего новостей: {len(all_entries)}")
     
-    # Уровень 1: 6ч + РФ + тема + медиа
     c = [e for e in all_entries if e['age_hours'] <= 6 and e['russia_match'] and e['theme_match'] and e['has_media']]
-    if c: 
-        print(f"✅ Уровень 1 (6ч+РФ+медиа): {len(c)} кандидатов")
-        return sorted(c, key=lambda e: e['age_hours'])[:5]
+    if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
     
-    # Уровень 2: 12ч + РФ + тема + медиа
     c = [e for e in all_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['has_media']]
-    if c: 
-        print(f"✅ Уровень 2 (12ч+РФ+медиа): {len(c)} кандидатов")
-        return sorted(c, key=lambda e: e['age_hours'])[:5]
+    if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
     
-    # Уровень 3: 12ч + тема + медиа (без РФ-фильтра, пусть ИИ решает)
     c = [e for e in all_entries if e['age_hours'] <= 12 and e['theme_match'] and e['has_media']]
-    if c: 
-        print(f"✅ Уровень 3 (12ч+медиа, РФ-фильтр отключен): {len(c)} кандидатов")
-        return sorted(c, key=lambda e: (not e['russia_match'], e['age_hours']))[:5]
+    if c: return sorted(c, key=lambda e: (not e['russia_match'], e['age_hours']))[:5]
     
-    # Уровень 4: 24ч + РФ + тема + медиа
     c = [e for e in all_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['has_media']]
-    if c: 
-        print(f"✅ Уровень 4 (24ч+РФ+медиа): {len(c)} кандидатов")
-        return sorted(c, key=lambda e: e['age_hours'])[:5]
+    if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
     
-    # Уровень 5: 24ч + тема + медиа (без РФ-фильтра)
     c = [e for e in all_entries if e['age_hours'] <= 24 and e['theme_match'] and e['has_media']]
-    if c: 
-        print(f"✅ Уровень 5 (24ч+медиа, любые): {len(c)} кандидатов")
-        return sorted(c, key=lambda e: (not e['russia_match'], e['age_hours']))[:5]
+    if c: return sorted(c, key=lambda e: (not e['russia_match'], e['age_hours']))[:5]
     
     return []
 
@@ -220,33 +208,26 @@ def call_openrouter(prompt):
             print(f"⚠️ Ошибка модели {model}: {e}")
     return ""
 
-# 👇 УМНЫЙ ВЫБОР С ЗАЩИТОЙ ОТ НЕ-РФ НОВОСТЕЙ
 def pick_most_important(candidates):
     if not candidates: return None
     titles_list = "\n".join([f"{i}. {c['title']}" for i, c in enumerate(candidates)])
-    
     prompt = f"""Ты главный редактор новостного канала про Россию.
-Задача: выбрать ОДИН самый важный заголовок, который касается РОССИИ (её регионов, граждан, политики).
+Выбери ОДИН самый важный заголовок, который касается РОССИИ.
 
 ПРАВИЛА:
-- Если есть хотя бы одна новость про РФ — выбери её и ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}).
-- Если ВСЕ новости в списке — про другие страны (США, Европа, Китай и т.п.) без связи с РФ — ответь словом NONE.
+- Если есть хотя бы одна новость про РФ — ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}).
+- Если ВСЕ новости про другие страны — ответь словом NONE.
 
-Список заголовков:
+Список:
 {titles_list}"""
     
     answer = call_openrouter(prompt).strip()
-    
     if 'NONE' in answer.upper():
-        print("ИИ: Ни одна новость не связана с РФ. Пропускаем.")
         return None
-    
     match = re.search(r'\d+', answer)
     if match:
         idx = int(match.group())
         if 0 <= idx < len(candidates): return candidates[idx]
-    
-    # Если ИИ не дал четкого ответа, берем первую РФ-новость из списка
     for c in candidates:
         if is_russia_related(f"{c['title']} {c['summary']}"):
             return c
@@ -259,16 +240,13 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
-    prompt = f"""Ты — корректор новостного канала. Внеси МИНИМАЛЬНЫЕ правки в текст.
+    prompt = f"""Ты — корректор новостного канала. Внеси МИНИМАЛЬНЫЕ правки в исходный текст.
 Не переписывай заново, не сокращай, не добавляй факты.
-
 Требования:
 1. Заголовок оберни в <b>...</b>.
 2. После </b> сделай ДВА переноса строки.
-3. Исправь только ошибки и пунктуацию.
-4. Добавь 1-2 уместных эмодзи.
-5. Никаких своих комментариев.
-
+3. Исправь ошибки и пунктуацию.
+4. Добавь 1-2 уместных эмодзи в начало текста.
 Рубрика: {theme}
 Заголовок: {title}
 Текст: {summary}
@@ -281,6 +259,20 @@ def rewrite_with_ai(title, summary, theme):
     raw_text = re.sub(r'Since the original text.*?\n', '', raw_text, flags=re.IGNORECASE)
     raw_text = re.sub(r'</b>\s*', '</b>\n\n', raw_text)
     raw_text = raw_text[:900]
+    
+    # 👇 СУПЕР-ФИЛЬТР: Проверяем, есть ли в тексте реальные слова (кроме заголовка и эмодзи)
+    plain_body = re.sub(r'<[^>]+>', '', raw_text).strip()  # Убираем HTML
+    plain_body = plain_body.replace("ПЕРВЫЕ НОВОСТИ", "").strip() # Убираем подпись
+    # Убираем сам заголовок из текста, чтобы проверить остаток
+    clean_title = re.sub(r'[^\w\s]', '', title).lower().strip()
+    clean_body = re.sub(r'[^\w\s]', '', plain_body).lower().strip()
+    clean_body = clean_body.replace(clean_title, '').strip()
+    
+    # Если после удаления заголовка осталось меньше 30 букв (только эмодзи и пробелы) — это брак
+    if len(clean_body) < 30:
+        print(f"❌ Отклонено: текст новости содержит только заголовок и эмодзи (нет сути).")
+        return None
+        
     return f"{sanitize_html(raw_text)}\n\n{SIGNATURE}"
 
 def send_photo(photo_url, caption):
@@ -381,6 +373,11 @@ def main():
             if best_news:
                 print(f"✅ ИИ выбрал: {best_news['title']}")
                 post = rewrite_with_ai(best_news['title'], best_news['summary'], theme)
+                
+                if post is None:
+                    print("❌ Новость отклонена из-за отсутствия текста. Ищем дальше...")
+                    continue
+
                 print(f"Сгенерированный текст:\n{post}\n")
                 
                 tg_success = send_to_telegram(post, best_news['media_type'], best_news['media_url'])
@@ -395,7 +392,7 @@ def main():
                     print(f"\n🎉 Готово! Следующая тема: {theme}")
                     return
         
-    print("\n❌ Не удалось найти подходящих новостей ни на одном уровне фильтрации.")
+    print("\n❌ Не удалось найти подходящих новостей.")
     sys.exit(0)
 
 if __name__ == "__main__":
