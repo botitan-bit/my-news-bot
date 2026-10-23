@@ -28,6 +28,7 @@ RSS_FEEDS = [
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=fsb_official&format=Atom",
 ]
 
+# Подпись ТОЛЬКО для Телеграма
 SIGNATURE = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
 
 THEMES = {
@@ -48,6 +49,12 @@ RUSSIA_KEYWORDS = [
     "башкир", "сибир", "урал", "кавказ", "ростов", "краснодар", "самара", "екатеринбург", 
     "новосибирск", "омск", "томск", "иркутск", "якут", "владивосток", "хабаровск", 
     "фронт", "шойгу", "белоусов", "губернатор", "сочи", "камчатк", "чукотк", "перм", "геленджик", "иванов", "нижний новгород", "певек"
+]
+
+# 👇 ЧЕРНЫЙ СПИСОК: мусорные новости и праздники
+BLACKLIST_WORDS = [
+    "какой сегодня", "какой праздник", "гороскоп", "день рождения", "история дня", 
+    "в этот день", "народные приметы", "церковный календарь", "лунный календарь", "именины"
 ]
 
 def get_posted_links():
@@ -124,6 +131,10 @@ def is_russia_related(text):
     text_lower = text.lower()
     return any(kw in text_lower for kw in RUSSIA_KEYWORDS)
 
+def is_blacklisted(text):
+    text_lower = text.lower()
+    return any(word in text_lower for word in BLACKLIST_WORDS)
+
 def get_news_candidates(theme):
     posted_links = get_posted_links()
     now = datetime.now(timezone.utc)
@@ -148,9 +159,11 @@ def get_news_candidates(theme):
                 summary_clean = re.sub(r'<[^>]+>', '', summary).strip()
                 
                 if is_old_news(title, summary): continue
+                if len(summary_clean) < 40: continue
                 
-                # Отсекаем новости, где мало текста (меньше 40 символов)
-                if len(summary_clean) < 40:
+                # 👇 ОТСЕКАЕМ ПРАЗДНИКИ И ГОРОСКОПЫ
+                if is_blacklisted(f"{title} {summary_clean}"):
+                    print(f"Отсеяна мусорная новость (праздник/гороскоп): {title}")
                     continue
                 
                 media_type, media_url = get_media_from_entry(entry, feed_url)
@@ -172,35 +185,20 @@ def get_news_candidates(theme):
     
     print(f"Собрано всего новостей (прошли базовый фильтр): {len(all_entries)}")
     
-    # Уровень 1: 6ч + РФ + тема + медиа
     c = [e for e in all_entries if e['age_hours'] <= 6 and e['russia_match'] and e['theme_match'] and e['has_media']]
-    if c: 
-        print(f"✅ Уровень 1 (6ч+РФ+медиа+тема): {len(c)}")
-        return sorted(c, key=lambda e: e['age_hours'])[:5]
+    if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
     
-    # Уровень 2: 12ч + РФ + тема + медиа
     c = [e for e in all_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['has_media']]
-    if c: 
-        print(f"✅ Уровень 2 (12ч+РФ+медиа+тема): {len(c)}")
-        return sorted(c, key=lambda e: e['age_hours'])[:5]
+    if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
     
-    # Уровень 3: 24ч + РФ + тема + медиа
     c = [e for e in all_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['has_media']]
-    if c: 
-        print(f"✅ Уровень 3 (24ч+РФ+медиа+тема): {len(c)}")
-        return sorted(c, key=lambda e: e['age_hours'])[:5]
+    if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
 
-    # Уровень 4: 24ч + РФ + медиа (Любая тема, но с медиа и про РФ)
     c = [e for e in all_entries if e['age_hours'] <= 24 and e['russia_match'] and e['has_media']]
-    if c: 
-        print(f"⚠️ Уровень 4 (24ч+РФ+медиа, ЛЮБАЯ ТЕМА): {len(c)}")
-        return sorted(c, key=lambda e: e['age_hours'])[:5]
+    if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
         
-    # Уровень 5: 24ч + РФ (любая тема, без медиа)
     c = [e for e in all_entries if e['age_hours'] <= 24 and e['russia_match']]
-    if c: 
-        print(f"⚠️ Уровень 5 (24ч+РФ, БЕЗ МЕДИА): {len(c)}")
-        return sorted(c, key=lambda e: e['age_hours'])[:5]
+    if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
     
     return []
 
@@ -254,8 +252,11 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
+    # 👇 ЗАПРЕЩАЕМ ИИ УПОМИНАТЬ САЙТЫ И СТАВИМ ЖЕСТКИЕ ПРАВИЛА
     prompt = f"""Ты — корректор новостного канала. Внеси МИНИМАЛЬНЫЕ правки в исходный текст.
-Не переписывай заново, не сокращай, не добавляй факты.
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО упоминать источники (например, "Лента.ру", "РИА Новости", "ТАСС", "подробнее на сайте").
+Удали все ссылки на сторонние сайты и призывы перейти по ссылке.
+
 Требования:
 1. Заголовок оберни в <b>...</b>.
 2. После </b> сделай ДВА переноса строки.
@@ -271,11 +272,19 @@ def rewrite_with_ai(title, summary, theme):
         
     raw_text = re.sub(r'\(Note:.*?\)', '', raw_text, flags=re.IGNORECASE)
     raw_text = re.sub(r'Since the original text.*?\n', '', raw_text, flags=re.IGNORECASE)
+    
+    # 👇 УДАЛЯЕМ УПОМИНАНИЯ САЙТОВ, ЕСЛИ ИИ ИХ ПРОПУСТИЛ
+    clean_patterns = [
+        r'в материале .*?[.»"]', r'подробнее .*?[.»"]', r'читайте .*?[.»"]', 
+        r'на сайте .*?[.»"]', r'сообщает .*?\.', r'источник:.*?\n'
+    ]
+    for pattern in clean_patterns:
+        raw_text = re.sub(pattern, '', raw_text, flags=re.IGNORECASE)
+
     raw_text = re.sub(r'</b>\s*', '</b>\n\n', raw_text)
     raw_text = raw_text[:900]
     
     plain_body = re.sub(r'<[^>]+>', '', raw_text).strip()
-    plain_body = plain_body.replace("ПЕРВЫЕ НОВОСТИ", "").strip()
     clean_title = re.sub(r'[^\w\s]', '', title).lower().strip()
     clean_body = re.sub(r'[^\w\s]', '', plain_body).lower().strip()
     clean_body = clean_body.replace(clean_title, '').strip()
@@ -284,7 +293,7 @@ def rewrite_with_ai(title, summary, theme):
         print(f"❌ Отклонено: текст новости содержит только заголовок и эмодзи (нет сути).")
         return None
         
-    return f"{sanitize_html(raw_text)}\n\n{SIGNATURE}"
+    return sanitize_html(raw_text)
 
 def send_photo(photo_url, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
@@ -320,12 +329,14 @@ def send_video(video_url, caption):
     return False
 
 def send_to_telegram(text, media_type, media_url):
+    full_text = f"{text}\n\n{SIGNATURE}"
     if media_type == 'video' and media_url:
-        if send_video(media_url, text): return True
+        if send_video(media_url, full_text): return True
     elif media_type == 'image' and media_url:
-        if send_photo(media_url, text): return True
+        if send_photo(media_url, full_text): return True
+        
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHANNEL_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    payload = {"chat_id": TELEGRAM_CHANNEL_ID, "text": full_text, "parse_mode": "HTML", "disable_web_page_preview": True}
     try:
         r = requests.post(url, json=payload, timeout=30)
         if r.status_code == 200: return True
@@ -338,7 +349,11 @@ def send_to_vk(text, media_type, media_url):
         return False
         
     print("Отправляем пост во ВКонтакте...")
-    clean_text = text.replace('<b>', '').replace('</b>', '').replace('&quot;', '"').replace('&amp;', '&')
+    
+    # Убираем ВСЕ HTML-теги для ВК
+    clean_text = re.sub(r'<[^>]+>', '', text)
+    clean_text = clean_text.replace('&quot;', '"').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').strip()
+    
     try:
         vk_session = vk_api.VkApi(token=VK_TOKEN)
         vk = vk_session.get_api()
@@ -348,7 +363,7 @@ def send_to_vk(text, media_type, media_url):
             try:
                 img_data = requests.get(media_url, timeout=30).content
                 upload = VkUpload(vk_session)
-                photo = upload.photo_wall(io.BytesIO(img_data), group_id=VK_GROUP_ID)[0]
+                photo = upload.photo_wall(io.BytesIO(img_data), group_id=int(VK_GROUP_ID))[0]
                 attachments = f"photo{photo['owner_id']}_{photo['id']}"
             except Exception as e:
                 print(f"ВК: Не удалось загрузить фото ({e}). Постим только текст.")
@@ -383,19 +398,19 @@ def main():
             
             if best_news:
                 print(f"✅ ИИ выбрал: {best_news['title']}")
-                post = rewrite_with_ai(best_news['title'], best_news['summary'], theme)
+                post_body = rewrite_with_ai(best_news['title'], best_news['summary'], theme)
                 
-                if post is None:
+                if post_body is None:
                     print("❌ Новость отклонена из-за отсутствия текста. Ищем дальше...")
                     continue
 
-                print(f"Сгенерированный текст:\n{post}\n")
+                print(f"Сгенерированный текст:\n{post_body}\n")
                 
-                tg_success = send_to_telegram(post, best_news['media_type'], best_news['media_url'])
+                tg_success = send_to_telegram(post_body, best_news['media_type'], best_news['media_url'])
                 print(f"Telegram: {'OK' if tg_success else 'FAIL'}")
                 
                 if tg_success:
-                    vk_result = send_to_vk(post, best_news['media_type'], best_news['media_url'])
+                    vk_result = send_to_vk(post_body, best_news['media_type'], best_news['media_url'])
                     print(f"ВКонтакте: {'OK' if vk_result else 'FAIL'}")
                     
                     save_last_theme(theme)
