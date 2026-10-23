@@ -34,7 +34,7 @@ PRIORITY_FEEDS = [
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=SHOCKkzn&format=Atom",
 ]
 
-# 👇 2. ОБЩИЙ СПИСОК ИСТОЧНИКОВ (Если в приоритетных пусто)
+# 👇 2. ОБЩИЙ СПИСОК ИСТОЧНИКОВ
 RSS_FEEDS = [
     "https://lenta.ru/rss/news",
     "https://ria.ru/export/rss2/archive/index.xml",
@@ -238,7 +238,6 @@ def is_blacklisted(text):
     return any(word in text_lower for word in BLACKLIST_WORDS)
 
 def process_feeds(feed_list, theme, posted_links, posted_images, now):
-    """Вспомогательная функция для обработки списка лент."""
     entries = []
     for feed_url in feed_list:
         try:
@@ -298,35 +297,40 @@ def get_news_candidates(theme):
     posted_images = [clean_image_url(img) for img in get_posted_images()]
     now = datetime.now(timezone.utc)
     
-    # 👇 ШАГ 1: Проверяем ПРИОРИТЕТНЫЕ каналы
-    print(f"  -> Проверяем приоритетные каналы...")
+    # 👇 Собираем ВСЕ новости
     priority_entries = process_feeds(PRIORITY_FEEDS, theme, posted_links, posted_images, now)
-    
-    if priority_entries:
-        print(f"  ✅ В приоритетных каналах найдено {len(priority_entries)} новостей.")
-        # Логика приоритета видео и свежести для приоритетных
-        c_video = [e for e in priority_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'video']
-        if c_video: return sorted(c_video, key=lambda e: e['age_hours'])[:5]
-        
-        c_img = [e for e in priority_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
-        if c_img: return sorted(c_img, key=lambda e: e['age_hours'])[:5]
-        
-        c_img_24 = [e for e in priority_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
-        if c_img_24: return sorted(c_img_24, key=lambda e: e['age_hours'])[:5]
-    
-    # 👇 ШАГ 2: Если в приоритетных пусто, идем в общий список
-    print(f"  -> В приоритетных пусто. Переходим к общим источникам...")
     general_entries = process_feeds(RSS_FEEDS, theme, posted_links, posted_images, now)
-    print(f"Собрано всего новостей из общих источников: {len(general_entries)}")
     
-    c_video = [e for e in general_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'video']
-    if c_video: return sorted(c_video, key=lambda e: e['age_hours'])[:5]
+    all_entries = priority_entries + general_entries
+    print(f"Собрано всего новостей (с медиа): {len(all_entries)}")
+    
+    # 🎥 ШАГ 1: ЖЕСТКИЙ ПРИОРИТЕТ ВИДЕО (Ищем видео во всех каналах!)
+    c_video = [e for e in all_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'video']
+    if c_video:
+        print(f"🔥 Найдено {len(c_video)} новостей с ВИДЕО (до 12ч)! Отдаем приоритет видео.")
+        return sorted(c_video, key=lambda e: e['age_hours'])[:5]
 
-    c_img_12 = [e for e in general_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
-    if c_img_12: return sorted(c_img_12, key=lambda e: e['age_hours'])[:5]
+    # 🖼️ ШАГ 2: Видео нет. Ищем картинки в приоритетных каналах.
+    c_img_priority = [e for e in priority_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
+    if c_img_priority: 
+        print(f"Видео не найдено. Берем {len(c_img_priority)} новостей с картинками из приоритетных.")
+        return sorted(c_img_priority, key=lambda e: e['age_hours'])[:5]
     
-    c_img_24 = [e for e in general_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
-    if c_img_24: return sorted(c_img_24, key=lambda e: e['age_hours'])[:5]
+    c_img_priority_24 = [e for e in priority_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
+    if c_img_priority_24: 
+        print(f"Берем {len(c_img_priority_24)} новостей с картинками из приоритетных (до 24ч).")
+        return sorted(c_img_priority_24, key=lambda e: e['age_hours'])[:5]
+
+    # 🖼️ ШАГ 3: И в приоритетных пусто. Ищем картинки в общих.
+    c_img_general = [e for e in general_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
+    if c_img_general: 
+        print(f"Берем {len(c_img_general)} новостей с картинками из общих.")
+        return sorted(c_img_general, key=lambda e: e['age_hours'])[:5]
+
+    c_img_general_24 = [e for e in general_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
+    if c_img_general_24: 
+        print(f"Берем {len(c_img_general_24)} новостей с картинками из общих (до 24ч).")
+        return sorted(c_img_general_24, key=lambda e: e['age_hours'])[:5]
     
     return []
 
