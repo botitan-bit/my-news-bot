@@ -8,6 +8,7 @@ import time
 import io
 import vk_api
 import urllib3
+from bs4 import BeautifulSoup
 from vk_api.upload import VkUpload
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
@@ -25,9 +26,8 @@ MAX_CHANNEL_ID = os.environ.get("MAX_CHANNEL_ID", "").strip()
 
 POST_PHOTO_TO_VK = True
 
-# 👇 1. СПИСОК ПРИОРИТЕТНЫХ КАНАЛОВ (RSS)
 PRIORITY_FEEDS = [
-    "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=pilachzx&format=Atom", # 👈 Новый канал
+    "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=pilachzx&format=Atom",
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=slavaded1337&format=Atom",
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=novosti_efir&format=Atom",
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=botcharov&format=Atom",
@@ -35,7 +35,6 @@ PRIORITY_FEEDS = [
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=SHOCKkzn&format=Atom",
 ]
 
-# 👇 2. ОБЩИЙ СПИСОК ИСТОЧНИКОВ
 RSS_FEEDS = [
     "https://lenta.ru/rss/news",
     "https://ria.ru/export/rss2/archive/index.xml",
@@ -139,50 +138,52 @@ def get_tg_web_videos(channel_name, theme, now):
         if resp.status_code != 200:
             return []
         
-        html_content = resp.text
-        posts = re.split(r'<div class="tgme_widget_message_wrap', html_content)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        posts = soup.select(".tgme_widget_message[data-post]")
         
-        for post in posts[1:]:
-            video_match = re.search(r'<video[^>]+src="([^"]+)"', post)
-            if not video_match:
+        for post in reversed(posts):
+            video_tag = post.select_one(".tgme_widget_message_video_player video[src]")
+            if not video_tag:
                 continue
                 
-            video_url = video_match.group(1)
-            
-            text_match = re.search(r'<div class="tgme_widget_message_text[^>]*>(.*?)</div>', post, re.DOTALL)
-            link_match = re.search(r'data-post="([^"]+)"', post)
-            
-            if not text_match or not link_match:
+            video_url = video_tag.get("src")
+            if not video_url:
                 continue
                 
-            raw_text = text_match.group(1)
-            clean_text = re.sub(r'<[^>]+>', ' ', raw_text)
-            clean_text = html.unescape(clean_text).strip()
-            
+            if video_url.startswith("//"):
+                video_url = "https:" + video_url
+                
+            text_tag = post.select_one(".tgme_widget_message_text")
+            if not text_tag:
+                continue
+                
+            clean_text = text_tag.get_text("\n", strip=True)
             if len(clean_text) < 20:
                 continue
                 
-            post_link = f"https://t.me/{link_match.group(1)}"
+            post_id = post.get("data-post", "")
+            post_link = f"https://t.me/{post_id}"
             
-            if is_blacklisted(clean_text): continue
-            
-            full_text = clean_text
-            if not is_russia_related(full_text): continue
-            
-            if is_theme_match(full_text, theme):
-                videos.append({
-                    "title": clean_text[:60] + "...",
-                    "summary": clean_text,
-                    "age_hours": 1.0, 
-                    "media_type": "video",
-                    "media_url": video_url,
-                    "link": post_link,
-                    "theme_match": True,
-                    "russia_match": True,
-                    "has_media": True
-                })
+            if is_blacklisted(clean_text):
+                continue
+            if not is_russia_related(clean_text):
+                continue
+            if not is_theme_match(clean_text, theme):
+                continue
+                
+            videos.append({
+                "title": clean_text[:60] + "...",
+                "summary": clean_text,
+                "age_hours": 1.0,
+                "media_type": "video",
+                "media_url": video_url,
+                "link": post_link,
+                "theme_match": True,
+                "russia_match": True,
+                "has_media": True
+            })
     except Exception as e:
-        pass
+        print(f"Ошибка парсинга {channel_name}: {e}")
     return videos
 
 def process_feeds(feed_list, theme, posted_links, posted_images, now):
@@ -273,7 +274,6 @@ def get_news_candidates(theme):
     
     print(f"  -> Ищем видео в веб-версиях Telegram-каналов...")
     tg_videos = []
-    # 👇 Добавили pilachzx на первое место!
     tg_channels = ["pilachzx", "slavaded1337", "novosti_efir", "botcharov", "mnogonazi", "SHOCKkzn", "mash", "bazabazon", "shot_shot"]
     for ch in tg_channels:
         vids = get_tg_web_videos(ch, theme, now)
