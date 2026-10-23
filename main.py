@@ -467,10 +467,9 @@ def send_to_max(text, media_type, media_url):
             
             print(f"  -> Загружаем видео в MAX (размер: {len(video_data) // (1024*1024)} МБ)...")
             
-            # 👇 ЯВНО УКАЗЫВАЕМ multipart/form-data И ПРАВИЛЬНОЕ ИМЯ ПОЛЯ
+            # 👇 ИСПРАВЛЕНИЕ: Убираем Content-Type, requests сам сгенерирует boundary
             upload_headers = {
-                "Authorization": MAX_BOT_TOKEN,
-                "Content-Type": "multipart/form-data"
+                "Authorization": MAX_BOT_TOKEN
             }
             
             upload_resp = requests.post(
@@ -486,7 +485,7 @@ def send_to_max(text, media_type, media_url):
                 return False
                 
             print("  ✅ Видео загружено. Ждем обработки на сервере MAX...")
-            time.sleep(10) # 👈 УВЕЛИЧИЛИ ПАУЗУ ДО 10 СЕКУНД
+            time.sleep(15) # 👈 УВЕЛИЧИЛИ ПАУЗУ ДО 15 СЕКУНД
             
             attachments.append({
                 "type": "video",
@@ -507,17 +506,25 @@ def send_to_max(text, media_type, media_url):
     if attachments:
         payload["attachments"] = attachments
 
-    try:
-        url = f"https://platform-api2.max.ru/messages?chat_id={MAX_CHANNEL_ID}"
-        response = requests.post(url, headers=headers, json=payload, timeout=20, verify=False)
-        response.raise_for_status()
-        print("✅ MAX: Успешно опубликовано!")
-        return True
-    except Exception as e:
-        print(f"❌ MAX Ошибка: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            print("Ответ сервера MAX:", e.response.text)
-        return False
+    # 👇 ДОБАВИЛИ ЦИКЛ ПОВТОРНЫХ ПОПЫТОК ПРИ ОШИБКЕ "attachment.not.ready"
+    for attempt in range(3):
+        try:
+            url = f"https://platform-api2.max.ru/messages?chat_id={MAX_CHANNEL_ID}"
+            response = requests.post(url, headers=headers, json=payload, timeout=20, verify=False)
+            response.raise_for_status()
+            print("✅ MAX: Успешно опубликовано!")
+            return True
+        except Exception as e:
+            error_text = str(e)
+            if "attachment.not.ready" in error_text and attempt < 2:
+                print(f"  ⏳ Файл ещё не обработан (попытка {attempt+1}/3). Ждем 10 секунд...")
+                time.sleep(10)
+            else:
+                print(f"❌ MAX Ошибка: {e}")
+                if hasattr(e, 'response') and e.response is not None:
+                    print("Ответ сервера MAX:", e.response.text)
+                return False
+    return False
 
 def main():
     ensure_state_files_exist()
