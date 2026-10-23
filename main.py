@@ -49,7 +49,6 @@ RSS_FEEDS = [
 SIGNATURE_TG = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
 SIGNATURE_MAX = '**[ПЕРВЫЕ НОВОСТИ](https://t.me/+l7bgzfXgngBkN2My)**'
 
-# 👇 РАСШИРИЛИ СПИСКИ КЛЮЧЕВЫХ СЛОВ ДЛЯ ТЕМ (Добавили сленг и сокращения)
 THEMES = {
     "СВО и Армия": ["сво", "дрон", "бпла", "ракета", "фронт", "минобороны", "всу", "штурм", "обстрел", "пво", "сводка", "наступление", "потери", "мобилизация", "армия", "военный", "беспилотник", "наши", "прилет", "хлопок", "боевик", "уничтожен", "ликвидирован"],
     "Катастрофы": ["погиб", "жертв", "катастрофа", "крушение", "авиакатастрофа", "обрушение", "наводнение", "ураган", "смерч", "теракт", "взрыв", "пожар", "спасатели", "мчс", "эвакуация", "чрезвычайный", "трагедия", "погибли", "рухнул"],
@@ -234,7 +233,6 @@ def get_tg_web_videos(channel_name, theme, now):
             if is_blacklisted(clean_text): 
                 count_blacklisted += 1
                 continue
-            # 👇 УБРАЛИ ПРОВЕРКУ НА РФ ДЛЯ ВИДЕО ИЗ TELEGRAM
             if not is_theme_match(clean_text, theme): 
                 count_not_theme += 1
                 continue
@@ -425,7 +423,9 @@ def send_to_vk(text, media_type, media_url):
         return False
 
 def send_to_max(text, media_type, media_url):
-    if not MAX_BOT_TOKEN or not MAX_CHANNEL_ID: return False
+    if not MAX_BOT_TOKEN or not MAX_CHANNEL_ID: 
+        print("MAX: Нет токена или ID канала.")
+        return False
         
     print("Отправляем пост в MAX...")
     clean_text = text.replace('<b>', '**').replace('</b>', '**')
@@ -465,21 +465,38 @@ def send_to_max(text, media_type, media_url):
                 print("  ❌ MAX не вернул URL или токен для загрузки.")
                 return False
             
-            print("  -> Загружаем видео в MAX...")
+            print(f"  -> Загружаем видео в MAX (размер: {len(video_data) // (1024*1024)} МБ)...")
+            
+            # 👇 ЯВНО УКАЗЫВАЕМ multipart/form-data И ПРАВИЛЬНОЕ ИМЯ ПОЛЯ
+            upload_headers = {
+                "Authorization": MAX_BOT_TOKEN,
+                "Content-Type": "multipart/form-data"
+            }
+            
             upload_resp = requests.post(
                 upload_url,
-                headers={"Authorization": MAX_BOT_TOKEN},
-                files={'data': ('video.mp4', video_data)},
-                timeout=60
+                headers=upload_headers,
+                files={'data': ('video.mp4', video_data, 'video/mp4')},
+                timeout=120 
             )
-            upload_resp.raise_for_status()
             
-            print("  ✅ Видео загружено. Ждем обработки...")
-            time.sleep(3)
+            if upload_resp.status_code not in [200, 201]:
+                print(f"  ❌ Ошибка загрузки видео: {upload_resp.status_code}")
+                print(f"  Ответ сервера: {upload_resp.text}")
+                return False
+                
+            print("  ✅ Видео загружено. Ждем обработки на сервере MAX...")
+            time.sleep(10) # 👈 УВЕЛИЧИЛИ ПАУЗУ ДО 10 СЕКУНД
             
             attachments.append({
                 "type": "video",
                 "payload": {"token": media_token}
+            })
+            
+        elif media_type == 'image' and media_url:
+            attachments.append({
+                "type": "image",
+                "payload": {"url": media_url}
             })
     
     except Exception as e:
