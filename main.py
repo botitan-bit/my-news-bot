@@ -12,9 +12,10 @@ from vk_api.upload import VkUpload
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
 
+# Отключаем предупреждения SSL для MAX
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
 VK_TOKEN = os.environ.get("VK_TOKEN", "").strip()
@@ -42,14 +43,6 @@ THEMES = {
     "Происшествия": ["происшеств", "авария", "дтп", "пожар", "взрыв", "чп", "катастрофа", "погиб", "пострадал", "крушение", "чрезвычайный", "преступление", "убийство", "теракт", "уголовное дело", "задержан", "суд", "следствие", "скорая", "спасатели", "мчс", "мвд", "фсб", "розыск", "эвакуация"]
 }
 THEME_ORDER = ["Политика", "СВО", "Мигранты", "Происшествия"]
-
-# 👇 ОБНОВЛЕННЫЙ СПИСОК АКТУАЛЬНЫХ БЕСПЛАТНЫХ МОДЕЛЕЙ
-MODELS = [
-    "qwen/qwen3.6-plus:free",             # Отлично понимает русский
-    "minimax/minimax-m2.5:free",          # Быстрая и стабильная
-    "meta-llama/llama-3.3-70b-instruct:free", # Надежный запасной вариант
-    "openrouter/free"                     # Автоматический подбор
-]
 
 RUSSIA_KEYWORDS = [
     "росси", "рф", "путин", "кремл", "москв", "петербург", "ленинград", "курск", "белгород", 
@@ -208,41 +201,27 @@ def get_news_candidates(theme):
     
     return []
 
-def call_openrouter(prompt):
-    url = "https://openrouter.ai/api/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/",
-        "X-Title": "News Bot",
-    }
-    
-    for model in MODELS:
-        payload = {"model": model, "messages": [{"role": "user", "content": prompt}]}
+def call_groq(prompt):
+    if not GROQ_API_KEY:
+        print("❌ Нет GROQ_API_KEY!")
+        return ""
         
-        # 👇 ДЕЛАЕМ 3 ПОПЫТКИ ДЛЯ КАЖДОЙ МОДЕЛИ
-        for attempt in range(3):
-            try:
-                response = requests.post(url, headers=headers, json=payload, timeout=60)
-                response.raise_for_status()
-                return response.json()['choices'][0]['message']['content'].strip()
-                
-            except requests.exceptions.HTTPError as e:
-                if e.response.status_code == 429:
-                    # Если сработал минутный лимит, ждем и пробуем снова
-                    print(f"⏳ Модель {model} достигла лимита (429). Ждем 20 секунд и пробуем снова (попытка {attempt+1}/3)...")
-                    time.sleep(20)
-                elif e.response.status_code == 404:
-                    print(f"❌ Модель {model} не найдена (404). Пробуем следующую...")
-                    break # Переходим к следующей модели
-                else:
-                    print(f"⚠️ Ошибка модели {model}: {e}")
-                    time.sleep(5)
-            except Exception as e:
-                print(f"⚠️ Ошибка соединения: {e}")
-                time.sleep(5)
-                
-    return ""
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    # Используем самую быструю и умную модель
+    payload = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}]}
+    
+    try:
+        # Таймаут всего 10 секунд. Если Groq тупит - мы не ждем!
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        response.raise_for_status()
+        return response.json()['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        print(f"⚠️ Ошибка или таймаут Groq: {e}")
+        return ""
 
 def pick_most_important(candidates):
     if not candidates: return None
@@ -250,31 +229,21 @@ def pick_most_important(candidates):
     
     prompt = f"""Ты главный редактор серьезного новостного канала про Россию.
 Выбери ОДИН самый важный заголовок из списка. 
-
-КАТЕГОРИЧЕСКИ ИГНОРИРУЙ:
-- Спорт, пиво, стадионы.
-- Шоу-бизнес, знаменитостей, светские хроники.
-- Мелкие бытовые новости.
-
-ВЫБИРАЙ ТОЛЬКО:
-- Геополитику, крупные политические заявления.
-- Ход СВО, крупные военные сводки.
-- Серьезные экономические события.
-- Крупные катастрофы или ЧП.
-
+Игнорируй спорт, пиво, шоу-бизнес и мелкие бытовые новости.
 Ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}).
 
 Список:
 {titles_list}"""
     
-    answer = call_openrouter(prompt).strip()
-    match = re.search(r'\d+', answer)
-    if match:
-        idx = int(match.group())
-        if 0 <= idx < len(candidates): return candidates[idx]
-    
-    print("❌ ИИ не смог выбрать новость. Пропускаем запуск.")
-    return None
+    answer = call_groq(prompt)
+    if answer:
+        match = re.search(r'\d+', answer)
+        if match:
+            idx = int(match.group())
+            if 0 <= idx < len(candidates): return candidates[idx]
+            
+    # Если ИИ не ответил, берем просто первую новость
+    return candidates[0]
 
 def sanitize_html(text):
     text = text.replace('<b>', '||BOLD_START||').replace('</b>', '||BOLD_END||')
@@ -295,13 +264,17 @@ def rewrite_with_ai(title, summary, theme):
 Исходный заголовок: {title}
 Исходный текст: {summary}
 """
-    raw_text = call_openrouter(prompt)
+    raw_text = call_groq(prompt)
     
+    # 👇 СТРАХОВКА: Если ИИ упал или не ответил за 10 секунд, делаем текст вручную
     if not raw_text:
-        return None
+        print("⚠️ ИИ недоступен. Применяем быструю страховку (сырой текст).")
+        clean_summary = summary.strip()
+        if len(clean_summary) > 600:
+            clean_summary = clean_summary[:600] + "..."
+        return sanitize_html(f"<b>{title}</b>\n\n📰 {clean_summary}")
         
     raw_text = re.sub(r'^(Category|Рубрика|Категория):.*?\n', '', raw_text, flags=re.IGNORECASE)
-    
     clean_patterns = [
         r'—\s*в материале[^.]*\.', r'—\s*подробнее[^.]*\.', 
         r'—\s*читайте[^.]*\.', r'—\s*на сайте[^.]*\.', 
@@ -314,28 +287,20 @@ def rewrite_with_ai(title, summary, theme):
     raw_text = raw_text.replace('\\n', '\n')
     raw_text = raw_text[:900]
     
-    plain_body = re.sub(r'<[^>]+>', '', raw_text).strip()
-    clean_title = re.sub(r'[^\w\s]', '', title).lower().strip()
-    clean_body = re.sub(r'[^\w\s]', '', plain_body).lower().strip()
-    clean_body = clean_body.replace(clean_title, '').strip()
-    
-    if len(clean_body) < 30:
-        return None
-        
     return sanitize_html(raw_text)
 
 def send_photo(photo_url, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     payload = {"chat_id": TELEGRAM_CHANNEL_ID, "photo": photo_url, "caption": caption, "parse_mode": "HTML"}
     try:
-        r = requests.post(url, json=payload, timeout=30)
+        r = requests.post(url, json=payload, timeout=10)
         if r.status_code == 200: return True
     except: pass
     try:
-        img_data = requests.get(photo_url, timeout=60).content
+        img_data = requests.get(photo_url, timeout=10).content
         files = {'photo': ('image.jpg', img_data)}
         data = {"chat_id": TELEGRAM_CHANNEL_ID, "caption": caption, "parse_mode": "HTML"}
-        r = requests.post(url, data=data, files=files, timeout=60)
+        r = requests.post(url, data=data, files=files, timeout=15)
         if r.status_code == 200: return True
     except: pass
     return False
@@ -344,15 +309,15 @@ def send_video(video_url, caption):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
     payload = {"chat_id": TELEGRAM_CHANNEL_ID, "video": video_url, "caption": caption, "parse_mode": "HTML", "supports_streaming": True}
     try:
-        r = requests.post(url, json=payload, timeout=30)
+        r = requests.post(url, json=payload, timeout=10)
         if r.status_code == 200: return True
     except: pass
     try:
-        video_data = requests.get(video_url, timeout=60).content
+        video_data = requests.get(video_url, timeout=10).content
         if len(video_data) > 50 * 1024 * 1024: return False
         files = {'video': ('video.mp4', video_data)}
         data = {"chat_id": TELEGRAM_CHANNEL_ID, "caption": caption, "parse_mode": "HTML", "supports_streaming": True}
-        r = requests.post(url, data=data, files=files, timeout=60)
+        r = requests.post(url, data=data, files=files, timeout=15)
         if r.status_code == 200: return True
     except: pass
     return False
@@ -367,18 +332,15 @@ def send_to_telegram(text, media_type, media_url):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHANNEL_ID, "text": full_text, "parse_mode": "HTML", "disable_web_page_preview": True}
     try:
-        r = requests.post(url, json=payload, timeout=30)
+        r = requests.post(url, json=payload, timeout=10)
         if r.status_code == 200: return True
     except: pass
     return False
 
 def send_to_vk(text, media_type, media_url):
-    if not VK_TOKEN or not VK_GROUP_ID: 
-        print("ВК: Нет токена или ID группы.")
-        return False
+    if not VK_TOKEN or not VK_GROUP_ID: return False
         
     print("Отправляем пост во ВКонтакте...")
-    
     clean_text = re.sub(r'<[^>]+>', '', text)
     clean_text = html.unescape(clean_text).strip()
     
@@ -389,7 +351,7 @@ def send_to_vk(text, media_type, media_url):
         
         if POST_PHOTO_TO_VK and media_type == 'image' and media_url:
             try:
-                img_data = requests.get(media_url, timeout=30).content
+                img_data = requests.get(media_url, timeout=10).content
                 upload = VkUpload(vk_session)
                 photo = upload.photo_wall(io.BytesIO(img_data), group_id=int(VK_GROUP_ID))[0]
                 attachments = f"photo{photo['owner_id']}_{photo['id']}"
@@ -404,47 +366,30 @@ def send_to_vk(text, media_type, media_url):
         return False
 
 def send_to_max(text, media_type, media_url):
-    if not MAX_BOT_TOKEN or not MAX_CHANNEL_ID:
-        print("MAX: Нет токена или ID канала.")
-        return False
+    if not MAX_BOT_TOKEN or not MAX_CHANNEL_ID: return False
         
     print("Отправляем пост в MAX...")
-    
-    # 👇 КОНВЕРТИРУЕМ HTML В MARKDOWN ДЛЯ ЖИРНОГО ШРИФТА
     clean_text = text.replace('<b>', '**').replace('</b>', '**')
     clean_text = html.unescape(clean_text).strip()
     
     url = f"https://platform-api2.max.ru/messages?chat_id={MAX_CHANNEL_ID}"
-    headers = {
-        "Authorization": MAX_BOT_TOKEN,
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     
     attachments = []
     if media_type == 'image' and media_url:
-        attachments.append({
-            "type": "image",
-            "payload": {
-                "url": media_url
-            }
-        })
+        attachments.append({"type": "image", "payload": {"url": media_url}})
     
-    payload = {
-        "text": clean_text,
-        "format": "markdown"
-    }
-    if attachments:
-        payload["attachments"] = attachments
+    payload = {"text": clean_text, "format": "markdown"}
+    if attachments: payload["attachments"] = attachments
 
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30, verify=False)
+        # verify=False для российских сертификатов MAX
+        response = requests.post(url, headers=headers, json=payload, timeout=10, verify=False)
         response.raise_for_status()
         print("✅ MAX: Успешно опубликовано!")
         return True
     except Exception as e:
         print(f"❌ MAX Ошибка: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            print("Ответ сервера MAX:", e.response.text)
         return False
 
 def main():
@@ -467,13 +412,9 @@ def main():
             best_news = pick_most_important(candidates)
             
             if best_news:
-                print(f"✅ ИИ выбрал: {best_news['title']}")
+                print(f"✅ Выбрана новость: {best_news['title']}")
                 post_body = rewrite_with_ai(best_news['title'], best_news['summary'], theme)
                 
-                if post_body is None:
-                    print("❌ Новость отклонена. Ищем дальше...")
-                    continue
-
                 print(f"Сгенерированный текст:\n{post_body}\n")
                 
                 tg_success = send_to_telegram(post_body, best_news['media_type'], best_news['media_url'])
