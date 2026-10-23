@@ -32,7 +32,7 @@ SIGNATURE = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОС
 
 THEMES = {
     "Политика": ["политик", "власть", "кремль", "госдума", "президент", "путин", "правительство", "мишустин", "выборы", "санкции", "переговоры", "мид", "лавров", "песков", "законопроект", "депутат", "сенатор", "оппозиция", "протест", "нато", "сша", "европа", "брифинг", "саммит", "дипломат", "парламент"],
-    "СВО": ["сво", "спецоперация", "специальная военная", "военный", "армия", "всу", "дрон", "бпла", "беспилотник", "ракета", "обстрел", "фронт", "мобилизация", "минобороны", "шойгу", "белоусов", "курск", "донбасс", "авдеевка", "артемовск", "бахмут", "херсон", "запорожье", "наступление", "штурм", "снаряд", "танк", "авиация", "пво", "боевик", "разведка"],
+    "СВО": ["спецоперация", "специальная военная", "военный", "армия", "всу", "дрон", "бпла", "беспилотник", "ракета", "обстрел", "фронт", "мобилизация", "минобороны", "шойгу", "белоусов", "курск", "донбасс", "авдеевка", "артемовск", "бахмут", "херсон", "запорожье", "наступление", "штурм", "снаряд", "танк", "авиация", "пво", "боевик", "разведка"],
     "Мигранты": ["мигрант", "миграция", "иностранц", "приезж", "гражданство", "патент", "гастарбайтер", "диаспора", "депортация", "вид на жительство", "рвп", "квота", "трудовые ресурсы", "нелегал"],
     "Происшествия": ["происшеств", "авария", "дтп", "пожар", "взрыв", "чп", "катастрофа", "погиб", "пострадал", "крушение", "чрезвычайный", "преступление", "убийство", "теракт", "уголовное дело", "задержан", "суд", "следствие", "скорая", "спасатели", "мчс", "мвд", "фсб", "розыск", "эвакуация"]
 }
@@ -47,8 +47,7 @@ RUSSIA_KEYWORDS = [
     "совфед", "мид", "минобороны", "росгвард", "фсб", "мвд", "мчс", "чечн", "татарстан", 
     "башкир", "сибир", "урал", "кавказ", "ростов", "краснодар", "самара", "екатеринбург", 
     "новосибирск", "омск", "томск", "иркутск", "якут", "владивосток", "хабаровск", 
-    "сво", "всу", "дрон", "бпла", "фронт", "шойгу", "белоусов", "губернатор",
-    "сочи", "камчатк", "чукотк", "перм", "геленджик", "иванов", "нижний новгород", "певек"
+    "фронт", "шойгу", "белоусов", "губернатор", "сочи", "камчатк", "чукотк", "перм", "геленджик", "иванов", "нижний новгород", "певек"
 ]
 
 def get_posted_links():
@@ -108,7 +107,7 @@ def get_media_from_entry(entry, feed_url):
 def is_theme_match(text, theme):
     text_lower = text.lower()
     for keyword in THEMES[theme]:
-        if re.search(r'\b' + re.escape(keyword), text_lower):
+        if re.search(r'(?:^|[^а-яё])' + re.escape(keyword), text_lower):
             return True
     return False
 
@@ -150,8 +149,8 @@ def get_news_candidates(theme):
                 
                 if is_old_news(title, summary): continue
                 
-                # 👇 ЕЩЕ БОЛЕЕ ЖЕСТКИЙ ФИЛЬТР: Если текста меньше 60 символов (почти нет сути), пропускаем
-                if len(summary_clean) < 60:
+                # Отсекаем новости, где мало текста (меньше 40 символов)
+                if len(summary_clean) < 40:
                     continue
                 
                 media_type, media_url = get_media_from_entry(entry, feed_url)
@@ -171,22 +170,37 @@ def get_news_candidates(theme):
         except Exception as e:
             print(f"Ошибка чтения {feed_url}: {e}")
     
-    print(f"Собрано всего новостей: {len(all_entries)}")
+    print(f"Собрано всего новостей (прошли базовый фильтр): {len(all_entries)}")
     
+    # Уровень 1: 6ч + РФ + тема + медиа
     c = [e for e in all_entries if e['age_hours'] <= 6 and e['russia_match'] and e['theme_match'] and e['has_media']]
-    if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
+    if c: 
+        print(f"✅ Уровень 1 (6ч+РФ+медиа+тема): {len(c)}")
+        return sorted(c, key=lambda e: e['age_hours'])[:5]
     
+    # Уровень 2: 12ч + РФ + тема + медиа
     c = [e for e in all_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['has_media']]
-    if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
+    if c: 
+        print(f"✅ Уровень 2 (12ч+РФ+медиа+тема): {len(c)}")
+        return sorted(c, key=lambda e: e['age_hours'])[:5]
     
-    c = [e for e in all_entries if e['age_hours'] <= 12 and e['theme_match'] and e['has_media']]
-    if c: return sorted(c, key=lambda e: (not e['russia_match'], e['age_hours']))[:5]
-    
+    # Уровень 3: 24ч + РФ + тема + медиа
     c = [e for e in all_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['has_media']]
-    if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
-    
-    c = [e for e in all_entries if e['age_hours'] <= 24 and e['theme_match'] and e['has_media']]
-    if c: return sorted(c, key=lambda e: (not e['russia_match'], e['age_hours']))[:5]
+    if c: 
+        print(f"✅ Уровень 3 (24ч+РФ+медиа+тема): {len(c)}")
+        return sorted(c, key=lambda e: e['age_hours'])[:5]
+
+    # Уровень 4: 24ч + РФ + медиа (Любая тема, но с медиа и про РФ)
+    c = [e for e in all_entries if e['age_hours'] <= 24 and e['russia_match'] and e['has_media']]
+    if c: 
+        print(f"⚠️ Уровень 4 (24ч+РФ+медиа, ЛЮБАЯ ТЕМА): {len(c)}")
+        return sorted(c, key=lambda e: e['age_hours'])[:5]
+        
+    # Уровень 5: 24ч + РФ (любая тема, без медиа)
+    c = [e for e in all_entries if e['age_hours'] <= 24 and e['russia_match']]
+    if c: 
+        print(f"⚠️ Уровень 5 (24ч+РФ, БЕЗ МЕДИА): {len(c)}")
+        return sorted(c, key=lambda e: e['age_hours'])[:5]
     
     return []
 
@@ -260,15 +274,12 @@ def rewrite_with_ai(title, summary, theme):
     raw_text = re.sub(r'</b>\s*', '</b>\n\n', raw_text)
     raw_text = raw_text[:900]
     
-    # 👇 СУПЕР-ФИЛЬТР: Проверяем, есть ли в тексте реальные слова (кроме заголовка и эмодзи)
-    plain_body = re.sub(r'<[^>]+>', '', raw_text).strip()  # Убираем HTML
-    plain_body = plain_body.replace("ПЕРВЫЕ НОВОСТИ", "").strip() # Убираем подпись
-    # Убираем сам заголовок из текста, чтобы проверить остаток
+    plain_body = re.sub(r'<[^>]+>', '', raw_text).strip()
+    plain_body = plain_body.replace("ПЕРВЫЕ НОВОСТИ", "").strip()
     clean_title = re.sub(r'[^\w\s]', '', title).lower().strip()
     clean_body = re.sub(r'[^\w\s]', '', plain_body).lower().strip()
     clean_body = clean_body.replace(clean_title, '').strip()
     
-    # Если после удаления заголовка осталось меньше 30 букв (только эмодзи и пробелы) — это брак
     if len(clean_body) < 30:
         print(f"❌ Отклонено: текст новости содержит только заголовок и эмодзи (нет сути).")
         return None
