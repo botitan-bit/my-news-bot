@@ -279,6 +279,10 @@ def rewrite_with_ai(title, summary, theme):
         raw_text = re.sub(pattern, '', raw_text, flags=re.IGNORECASE)
 
     raw_text = re.sub(r'</b>\s*', '</b>\n\n', raw_text)
+    
+    # 👇 ИСПРАВЛЕНИЕ ЛИТЕРАЛЬНЫХ \n
+    raw_text = raw_text.replace('\\n', '\n')
+    
     raw_text = raw_text[:900]
     
     plain_body = re.sub(r'<[^>]+>', '', raw_text).strip()
@@ -360,7 +364,7 @@ def send_to_vk(text, media_type, media_url):
                 upload = VkUpload(vk_session)
                 photo = upload.photo_wall(io.BytesIO(img_data), group_id=int(VK_GROUP_ID))[0]
                 attachments = f"photo{photo['owner_id']}_{photo['id']}"
-                time.sleep(2)  # Пауза между загрузкой фото и постом, чтобы избежать Flood Control
+                time.sleep(2)
             except Exception as e:
                 print(f"ВК: Не удалось загрузить фото ({e}). Постим только текст.")
         
@@ -370,7 +374,7 @@ def send_to_vk(text, media_type, media_url):
     except Exception as e:
         error_msg = str(e)
         if "Flood control" in error_msg:
-            print("⚠️ ВК: Flood control. Ждем 10 секунд и пробуем снова...")
+            print("⚠️ ВК: Flood control. Ждем 10 секунд...")
             time.sleep(10)
             try:
                 vk.wall.post(owner_id=f"-{VK_GROUP_ID}", message=clean_text, attachments=attachments, from_group=1)
@@ -379,8 +383,6 @@ def send_to_vk(text, media_type, media_url):
             except Exception as retry_e:
                 print(f"❌ ВК: Повторная ошибка: {retry_e}")
         print(f"❌ ВК Ошибка: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            print("Ответ сервера ВК:", e.response.text)
         return False
 
 def send_to_max(text, media_type, media_url):
@@ -390,15 +392,12 @@ def send_to_max(text, media_type, media_url):
         
     print("Отправляем пост в MAX...")
     
-    clean_text = text  # MAX понимает HTML
-    
     url = f"https://platform-api2.max.ru/messages?chat_id={MAX_CHANNEL_ID}"
     headers = {
         "Authorization": MAX_BOT_TOKEN,
         "Content-Type": "application/json"
     }
     
-    # Формируем вложения, если есть изображение
     attachments = []
     if media_type == 'image' and media_url:
         attachments.append({
@@ -408,9 +407,7 @@ def send_to_max(text, media_type, media_url):
             }
         })
     
-    payload = {
-        "text": clean_text
-    }
+    payload = {"text": text}
     if attachments:
         payload["attachments"] = attachments
 
@@ -449,23 +446,29 @@ def main():
                 post_body = rewrite_with_ai(best_news['title'], best_news['summary'], theme)
                 
                 if post_body is None:
-                    print("❌ Новость отклонена из-за отсутствия текста. Ищем дальше...")
+                    print("❌ Новость отклонена. Ищем дальше...")
                     continue
 
                 print(f"Сгенерированный текст:\n{post_body}\n")
                 
+                # 1. Публикуем в Telegram
                 tg_success = send_to_telegram(post_body, best_news['media_type'], best_news['media_url'])
                 print(f"Telegram: {'OK' if tg_success else 'FAIL'}")
                 
                 if tg_success:
+                    # 2. СРАЗУ сохраняем в память, чтобы не было дублей, даже если ВК/MAX упадут
+                    save_last_theme(theme)
+                    save_posted_link(best_news['link'])
+                    print("Состояние сохранено. Теперь пытаемся отправить в ВК и MAX...")
+                    
+                    # 3. Пытаемся отправить в ВК
                     vk_result = send_to_vk(post_body, best_news['media_type'], best_news['media_url'])
                     print(f"ВКонтакте: {'OK' if vk_result else 'FAIL'}")
                     
+                    # 4. Пытаемся отправить в MAX
                     max_result = send_to_max(post_body, best_news['media_type'], best_news['media_url'])
                     print(f"MAX: {'OK' if max_result else 'FAIL'}")
                     
-                    save_last_theme(theme)
-                    save_posted_link(best_news['link'])
                     print(f"\n🎉 Готово! Следующая тема: {theme}")
                     return
         
