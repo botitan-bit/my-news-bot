@@ -136,12 +136,6 @@ def get_media_from_entry(entry, feed_url):
                 if media.get('medium') == 'video' or 'video' in media.get('type', ''): return 'video', url
                 if media.get('medium') == 'image' or 'image' in media.get('type', ''): return 'image', url
 
-    if 'media_thumbnail' in entry:
-        for thumb in entry.media_thumbnail:
-            url = thumb.get('url', '')
-            if url: 
-                pass
-
     html_to_search = ""
     if 'content' in entry:
         for content_block in entry.content:
@@ -251,19 +245,24 @@ def get_news_candidates(theme):
             
     print(f"Собрано всего новостей: {len(all_entries)}")
     
-    # 🎥 1. ЖЕСТКИЙ ПРИОРИТЕТ ВИДЕО: Если есть видео (до 6ч) - берем ТОЛЬКО его!
-    c_video = [e for e in all_entries if e['age_hours'] <= 6 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'video']
+    # 🎥 1. ЖЕСТКИЙ ПРИОРИТЕТ ВИДЕО: Если есть видео (до 12ч) - берем ТОЛЬКО его!
+    c_video = [e for e in all_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'video']
     if c_video:
-        print(f"🔥 Найдено {len(c_video)} новостей с ВИДЕО (до 6ч)! Отдаем приоритет видео.")
+        print(f"🔥 Найдено {len(c_video)} новостей с ВИДЕО (до 12ч)! Отдаем приоритет видео.")
         return sorted(c_video, key=lambda e: e['age_hours'])[:5]
 
-    # 🖼️ 2. Если видео нет, ищем картинки (ТОЛЬКО до 6 часов)
-    c_img_6 = [e for e in all_entries if e['age_hours'] <= 6 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
-    if c_img_6: 
-        print(f"Видео не найдено. Берем {len(c_img_6)} новостей с картинками (до 6ч).")
-        return sorted(c_img_6, key=lambda e: e['age_hours'])[:5]
+    # 🖼️ 2. Если видео нет, ищем картинки (до 12 часов)
+    c_img_12 = [e for e in all_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
+    if c_img_12: 
+        print(f"Видео не найдено. Берем {len(c_img_12)} новостей с картинками (до 12ч).")
+        return sorted(c_img_12, key=lambda e: e['age_hours'])[:5]
     
-    print("Нет новостей моложе 6 часов.")
+    # 🖼️ 3. Если и тут пусто, ищем картинки (до 24ч)
+    c_img_24 = [e for e in all_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
+    if c_img_24: 
+        print(f"Берем {len(c_img_24)} новостей с картинками (до 24ч).")
+        return sorted(c_img_24, key=lambda e: e['age_hours'])[:5]
+    
     return []
 
 def call_groq(prompt):
@@ -293,14 +292,15 @@ def pick_most_important(candidates):
     if recent_titles:
         history_text = "УЖЕ ОПУБЛИКОВАНО РАНЕЕ:\n" + "\n".join(recent_titles) + "\n"
     
+    # 👇 СМЯГЧИЛИ ПРОМПТ: Теперь ИИ выбирает лучшее из того, что есть, а не ищет идеал
     prompt = f"""Ты — редактор жесткого новостного канала. Выбери ОДИН самый интересный, конкретный или трагичный заголовок из списка.
 КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выбирать новости про шоу-бизнес, актеров, фигуристов, спектакли, концерты, спорт или развлечения.
 ИГНОРИРУЙ обычные бытовые аварии (например, столкновение автобуса и грузовика с пострадавшими).
-Ищи только КРУПНЫЕ события: смертельные ДТП, взрывы, бандитские перестрелки, обрушения зданий, теракты.
+Выбери самое достойное из того, что есть (СВО, криминал, крупные ЧП).
 
 {history_text}
 
-Если ВСЕ новости в списке не подходят под критерии масштаба (или это скучные аварии), ответь NONE.
+Если ВСЕ новости в списке — это шоу-бизнес, спорт или пустые сводки, ответь NONE.
 В противном случае ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}).
 
 Список:
