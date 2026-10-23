@@ -338,10 +338,12 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
-    prompt = f"""Ты — профессиональный редактор. Перепиши новость так, чтобы она была понятной, цепляющей и ТОЛЬКО НА РУССКОМ ЯЗЫКЕ.
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ любые английские слова и фразы вроде "ожидается прямой эфир".
-ВНИМАТЕЛЬНО ПРОВЕРЯЙ СЛОВА. Не заменяй правильные слова на похожие по звучанию.
-Если в исходном тексте ТОЛЬКО общие фразы, напиши слово NONE.
+    # 👇 ОБНОВЛЕННЫЙ ПРОМПТ: ЗАПРЕТ НА КАНЦЕЛЯРИТ
+    prompt = f"""Ты — профессиональный редактор жесткого новостного канала. 
+Перепиши новость так, чтобы она была понятной, цепляющей и ТОЛЬКО НА РУССКОМ ЯЗЫКЕ.
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ любые английские слова.
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕН канцелярский, сухой стиль. Не пиши фразы вроде "По сведениям местных СМИ", "полиция расследует инцидент", "ведется проверка". Пиши как человек для людей, используя факты.
+Если в исходном тексте ТОЛЬКО общие фразы и нет конкретики, напиши слово NONE.
 
 Формат ответа:
 1. Заголовок в теге <b>...</b>. Сделай его громким и понятным.
@@ -448,7 +450,7 @@ def send_to_max(text, media_type, media_url):
         print("MAX: Нет токена или ID канала.")
         return False
         
-    print(f"Отправляем пост в MAX (канал: {MAX_CHANNEL_ID})...") # 👈 ДОБАВИЛИ ID КАНАЛА В ЛОГ
+    print(f"Отправляем пост в MAX (канал: {MAX_CHANNEL_ID})...")
     clean_text = text.replace('<b>', '**').replace('</b>', '**')
     clean_text = html.unescape(clean_text).strip()
     clean_text = f"{clean_text}\n\n{SIGNATURE_MAX}"
@@ -513,7 +515,7 @@ def send_to_max(text, media_type, media_url):
                 return False
                 
             print("  ✅ Видео загружено. Ждем обработки на сервере MAX...")
-            time.sleep(15) # 👈 УВЕЛИЧИЛИ ПАУЗУ ОБРАТНО ДО 15 СЕКУНД
+            time.sleep(15) 
             
             attachments.append({
                 "type": "video",
@@ -540,7 +542,6 @@ def send_to_max(text, media_type, media_url):
             url = f"https://platform-api2.max.ru/messages?chat_id={MAX_CHANNEL_ID}"
             response = requests.post(url, headers=headers, json=payload, timeout=20, verify=False)
             
-            # 👇 ДОБАВИЛИ ПОДРОБНЫЙ ВЫВОД ОТВЕТА ОТ MAX
             print(f"  DEBUG: Ответ MAX (попытка {attempt+1}): {response.status_code} - {response.text}")
             
             if response.status_code == 200:
