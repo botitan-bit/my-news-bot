@@ -79,6 +79,34 @@ BLACKLIST_WORDS = [
     "автобус", "маршрутка"
 ]
 
+# --- ФУНКЦИИ ПРОВЕРКИ ТЕКСТА (ТЕ САМЫЕ, КОТОРЫЕ ПОТЕРЯЛИСЬ) ---
+
+def is_theme_match(text, theme):
+    text_lower = text.lower()
+    for keyword in THEMES[theme]:
+        if re.search(r'(?:^|[^а-яё])' + re.escape(keyword), text_lower):
+            return True
+    return False
+
+def is_old_news(title, summary):
+    current_year = datetime.now().year
+    text = f"{title} {summary}".lower()
+    years = re.findall(r'\b(20\d{2})\b', text)
+    for year in years:
+        if int(year) < current_year:
+            return True
+    return False
+
+def is_russia_related(text):
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in RUSSIA_KEYWORDS)
+
+def is_blacklisted(text):
+    text_lower = text.lower()
+    return any(word in text_lower for word in BLACKLIST_WORDS)
+
+# -----------------------------------------------------------
+
 def get_posted_links():
     if os.path.exists("posted_news.txt"):
         with open("posted_news.txt", "r", encoding="utf-8") as f:
