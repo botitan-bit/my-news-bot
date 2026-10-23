@@ -12,7 +12,7 @@ from vk_api.upload import VkUpload
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
 
-# 👇 ПРИНУДИТЕЛЬНЫЙ ВЫВОД ЛОГОВ (чтобы не было пустых логов)
+# Принудительный вывод логов
 sys.stdout.reconfigure(line_buffering=True)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -59,6 +59,8 @@ BLACKLIST_WORDS = [
     "в этот день", "народные приметы", "церковный календарь", "лунный календарь", "именины"
 ]
 
+STOP_WORDS = {"в", "на", "и", "с", "по", "за", "о", "от", "до", "из", "у", "к", "не", "что", "как", "это", "все", "она", "так", "его", "но", "да", "ты", "же", "вы", "бы", "только", "ее", "мне", "было", "вот", "меня", "еще", "нет", "ему", "теперь", "когда", "даже", "ну", "вдруг", "ли", "если", "уже", "или", "ни", "быть", "был", "него", "вас", "нибудь", "опять", "уж", "вам", "ведь", "там", "потом", "себя", "ничего", "ей", "может", "они", "тут", "где", "есть", "надо", "ней", "для", "мы", "тебя", "их", "чем", "была", "сам", "чтоб", "без", "будто", "чего", "раз", "тоже", "себе", "под", "будет", "ж", "тогда", "кто", "этот", "того", "потому", "этого", "какой", "совсем", "ним", "здесь", "этом", "один", "почти", "мой", "тем", "чтобы", "нее", "сейчас", "были", "куда", "зачем", "сказать", "всех", "никогда", "сегодня", "можно", "при", "наконец", "два", "об", "другой", "хоть", "после", "над", "больше", "тот", "через", "эти", "нас", "про", "всего", "них", "какая", "много", "разве", "три", "эту", "моя", "впрочем", "хорошо", "свою", "этой", "перед", "иногда", "лучше", "чуть", "том", "нельзя", "такой", "им", "более", "всегда", "конечно", "всю", "между"}
+
 def get_posted_links():
     if os.path.exists("posted_news.txt"):
         with open("posted_news.txt", "r", encoding="utf-8") as f:
@@ -68,6 +70,43 @@ def get_posted_links():
 def save_posted_link(link):
     with open("posted_news.txt", "a", encoding="utf-8") as f:
         f.write(link + "\n")
+
+def get_posted_images():
+    if os.path.exists("posted_images.txt"):
+        with open("posted_images.txt", "r", encoding="utf-8") as f:
+            return f.read().splitlines()
+    return []
+
+def save_posted_image(url):
+    with open("posted_images.txt", "a", encoding="utf-8") as f:
+        f.write(url + "\n")
+
+def get_recent_titles():
+    if os.path.exists("published_titles.txt"):
+        with open("published_titles.txt", "r", encoding="utf-8") as f:
+            return f.read().splitlines()
+    return []
+
+def save_published_title(title):
+    with open("published_titles.txt", "a", encoding="utf-8") as f:
+        f.write(title + "\n")
+    titles = get_recent_titles()
+    if len(titles) > 15:
+        with open("published_titles.txt", "w", encoding="utf-8") as f:
+            f.write("\n".join(titles[-15:]) + "\n")
+
+def is_duplicate_title(new_title):
+    recent_titles = get_recent_titles()
+    if not recent_titles: return False
+    
+    new_words = set(re.findall(r'[а-яёa-z]+', new_title.lower())) - STOP_WORDS
+    
+    for old_title in recent_titles:
+        old_words = set(re.findall(r'[а-яёa-z]+', old_title.lower())) - STOP_WORDS
+        if len(new_words.intersection(old_words)) >= 2:
+            print(f"Отсеяно как смысловой дубль (похоже на: '{old_title}')")
+            return True
+    return False
 
 def get_last_theme():
     if os.path.exists("last_theme.txt"):
@@ -139,6 +178,7 @@ def is_blacklisted(text):
 
 def get_news_candidates(theme):
     posted_links = get_posted_links()
+    posted_images = get_posted_images()
     now = datetime.now(timezone.utc)
     
     all_entries = []
@@ -153,6 +193,10 @@ def get_news_candidates(theme):
                 link = entry.get("link", "")
                 if link in posted_links: continue
                 
+                title = entry.get("title", "")
+                
+                if is_duplicate_title(title): continue
+                
                 if hasattr(entry, 'published_parsed') and entry.published_parsed:
                     pub_time = time.mktime(entry.published_parsed)
                     pub_date = datetime.fromtimestamp(pub_time, timezone.utc)
@@ -160,17 +204,20 @@ def get_news_candidates(theme):
                 else:
                     age_hours = 8.0
                 
-                title = entry.get("title", "")
                 summary = entry.get("summary", entry.get("description", ""))
                 summary_clean = re.sub(r'<[^>]+>', '', summary).strip()
                 
                 if is_old_news(title, summary): continue
                 if len(summary_clean) < 40: continue
-                
-                if is_blacklisted(f"{title} {summary_clean}"):
-                    continue
+                if is_blacklisted(f"{title} {summary_clean}"): continue
                 
                 media_type, media_url = get_media_from_entry(entry, feed_url)
+                
+                if media_type == 'image' and media_url in posted_images:
+                    print(f"Отсеяна картинка-заглушка: {media_url}")
+                    media_type = None
+                    media_url = None
+                
                 full_text = f"{title} {summary}"
                 
                 all_entries.append({
@@ -411,7 +458,13 @@ def main():
                 if tg_success:
                     save_last_theme(theme)
                     save_posted_link(best_news['link'])
-                    print("Состояние сохранено (защита от дублей).")
+                    save_published_title(best_news['title'])
+                    
+                    if best_news.get('media_url'):
+                        save_posted_image(best_news['media_url'])
+                        print("Картинка добавлена в историю (защита от заглушек).")
+                        
+                    print("Состояние сохранено.")
                     
                     vk_result = send_to_vk(post_body, best_news['media_type'], best_news['media_url'])
                     print(f"ВКонтакте: {'OK' if vk_result else 'FAIL'}")
