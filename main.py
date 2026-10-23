@@ -99,10 +99,15 @@ def is_duplicate_title(new_title):
     recent_titles = get_recent_titles()
     if not recent_titles: return False
     
-    new_words = set(re.findall(r'[а-яёa-z]+', new_title.lower())) - STOP_WORDS
+    # 👇 УДАЛЯЕМ ЦИФРЫ ИЗ ЗАГОЛОВКА ПЕРЕД СРАВНЕНИЕМ
+    clean_new_title = re.sub(r'\d+', '', new_title.lower())
+    new_words = set(re.findall(r'[а-яёa-z]+', clean_new_title)) - STOP_WORDS
     
     for old_title in recent_titles:
-        old_words = set(re.findall(r'[а-яёa-z]+', old_title.lower())) - STOP_WORDS
+        clean_old_title = re.sub(r'\d+', '', old_title.lower())
+        old_words = set(re.findall(r'[а-яёa-z]+', clean_old_title)) - STOP_WORDS
+        
+        # Если совпало 2 или больше значимых слов (например, "снежных", "барсов"), это дубль
         if len(new_words.intersection(old_words)) >= 2:
             print(f"Отсеяно как смысловой дубль (похоже на: '{old_title}')")
             return True
