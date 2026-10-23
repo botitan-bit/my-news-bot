@@ -43,10 +43,11 @@ THEMES = {
 }
 THEME_ORDER = ["Политика", "СВО", "Мигранты", "Происшествия"]
 
+# 👇 ОБНОВЛЕННЫЙ СПИСОК РАБОЧИХ МОДЕЛЕЙ
 MODELS = [
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "google/gemma-2-9b-it:free",
-    "mistralai/mistral-7b-instruct:free"
+    "recursive/flint-v1.0:free",
+    "openrouter/free",
+    "meta-llama/llama-3.1-8b-instruct:free"
 ]
 
 RUSSIA_KEYWORDS = [
@@ -253,7 +254,7 @@ def pick_most_important(candidates):
         idx = int(match.group())
         if 0 <= idx < len(candidates): return candidates[idx]
     
-    print("❌ ИИ не смог выбрать новость (вероятно, лимиты). Пропускаем запуск.")
+    print("❌ ИИ не смог выбрать новость. Пропускаем запуск.")
     return None
 
 def sanitize_html(text):
@@ -390,7 +391,7 @@ def send_to_max(text, media_type, media_url):
         
     print("Отправляем пост в MAX...")
     
-    # 👇 МЕНЯЕМ HTML-ТЕГИ НА MARKDOWN ЗВЕЗДОЧКИ
+    # 👇 КОНВЕРТИРУЕМ HTML В MARKDOWN ДЛЯ ЖИРНОГО ШРИФТА
     clean_text = text.replace('<b>', '**').replace('</b>', '**')
     clean_text = html.unescape(clean_text).strip()
     
