@@ -2,7 +2,8 @@ name: Daily Telegram Post
 
 on:
   schedule:
-    - cron: '0 */4 * * *'
+    # 👇 ИЗМЕНЕНО НА КАЖДЫЕ 2 ЧАСА (12 раз в сутки)
+    - cron: '0 */2 * * *'
   workflow_dispatch:
   push:
     branches: [ main ]
