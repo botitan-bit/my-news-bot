@@ -143,7 +143,12 @@ def get_news_candidates(theme):
     all_entries = []
     for feed_url in RSS_FEEDS:
         try:
-            feed = feedparser.parse(feed_url)
+            # 👇 ИСПОЛЬЗУЕМ REQUESTS С ТАЙМАУТОМ 10 СЕК, ЧТОБЫ НЕ ВИСНУТЬ
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+            resp = requests.get(feed_url, timeout=10, headers=headers)
+            resp.raise_for_status()
+            feed = feedparser.parse(resp.content)
+            
             for entry in feed.entries[:60]:
                 link = entry.get("link", "")
                 if link in posted_links: continue
@@ -211,11 +216,10 @@ def call_groq(prompt):
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json",
     }
-    # Используем самую быструю и умную модель
     payload = {"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}]}
     
     try:
-        # Таймаут всего 10 секунд. Если Groq тупит - мы не ждем!
+        # Таймаут 10 секунд. Если Groq тупит - идем дальше.
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         response.raise_for_status()
         return response.json()['choices'][0]['message']['content'].strip()
@@ -242,7 +246,6 @@ def pick_most_important(candidates):
             idx = int(match.group())
             if 0 <= idx < len(candidates): return candidates[idx]
             
-    # Если ИИ не ответил, берем просто первую новость
     return candidates[0]
 
 def sanitize_html(text):
@@ -266,9 +269,9 @@ def rewrite_with_ai(title, summary, theme):
 """
     raw_text = call_groq(prompt)
     
-    # 👇 СТРАХОВКА: Если ИИ упал или не ответил за 10 секунд, делаем текст вручную
+    # СТРАХОВКА: Если Groq не ответил, используем оригинал
     if not raw_text:
-        print("⚠️ ИИ недоступен. Применяем быструю страховку (сырой текст).")
+        print("⚠️ ИИ недоступен. Применяем страховку (сырой текст).")
         clean_summary = summary.strip()
         if len(clean_summary) > 600:
             clean_summary = clean_summary[:600] + "..."
@@ -383,7 +386,6 @@ def send_to_max(text, media_type, media_url):
     if attachments: payload["attachments"] = attachments
 
     try:
-        # verify=False для российских сертификатов MAX
         response = requests.post(url, headers=headers, json=payload, timeout=10, verify=False)
         response.raise_for_status()
         print("✅ MAX: Успешно опубликовано!")
