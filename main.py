@@ -12,7 +12,6 @@ from vk_api.upload import VkUpload
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
 
-# Принудительный вывод логов
 sys.stdout.reconfigure(line_buffering=True)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -26,10 +25,16 @@ MAX_CHANNEL_ID = os.environ.get("MAX_CHANNEL_ID", "").strip()
 
 POST_PHOTO_TO_VK = True
 
+# 👇 ДОБАВИЛИ НОВЫЕ ИСТОЧНИКИ (Больше новостей!)
 RSS_FEEDS = [
     "https://lenta.ru/rss/news",
     "https://ria.ru/export/rss2/archive/index.xml",
     "https://tass.ru/rss/v2.xml",
+    "https://www.mk.ru/rss/index.xml",
+    "https://www.kp.ru/rss/allsections.xml",
+    "https://www.gazeta.ru/export/rss/lenta.xml",
+    "https://life.ru/rss.xml",
+    "https://ren.tv/rss",
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=mchs_official&format=Atom",
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=mvd_official&format=Atom",
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=fsb_official&format=Atom",
@@ -57,15 +62,14 @@ RUSSIA_KEYWORDS = [
     "фронт", "шойгу", "белоусов", "губернатор", "сочи", "камчатк", "чукотк", "перм", "геленджик", "иванов", "нижний новгород", "певек"
 ]
 
-# 👇 РАСШИРИЛИ ЧЕРНЫЙ СПИСОК (Шоу-бизнес)
 BLACKLIST_WORDS = [
     "какой сегодня", "какой праздник", "гороскоп", "день рождения", "история дня", 
     "в этот день", "народные приметы", "церковный календарь", "лунный календарь", "именины",
     "заседание", "законопроект", "бюджет", "форум", "выставка", "конференция", "экономика", "инфляция", "курс валют",
     "спорт", "гонщик", "гонка", "автоспорт", "футбол", "хоккей", "олимпиад", "чемпионат", "турнир", "матч", "клуб", "тренер",
     "шоу-бизнес", "актер", "актриса", "певец", "певица", "звезда", "сериал", "фильм", "премьера", "инстаграм", "тикток",
-    # НОВЫЕ СЛОВА (Шоу и развлечения):
-    "спектакль", "ледовый", "фигурист", "авербух", "петросян", "концерт", "развлечение", "шоу", "праздник", "фестиваль", "выступление"
+    "спектакль", "ледовый", "фигурист", "авербух", "петросян", "концерт", "развлечение", "шоу", "праздник", "фестиваль", "выступление",
+    "продолжают спецоперацию", "выполняют задачи", "боевая готовность", "полная готовность", "активные действия", "выполняют боевые задачи", "решают задачи", "контроль над ситуацией"
 ]
 
 def get_posted_links():
@@ -206,7 +210,10 @@ def get_news_candidates(theme):
                 summary_clean = re.sub(r'<[^>]+>', '', summary).strip()
                 
                 if is_old_news(title, summary): continue
-                if len(summary_clean) < 40: continue
+                
+                # 👇 СНИЗИЛИ ПОРОГ ДЛИНЫ ТЕКСТА ДО 20 СИМВОЛОВ (Чтобы не терять короткие сводки)
+                if len(summary_clean) < 20: continue
+                
                 if is_blacklisted(f"{title} {summary_clean}"): continue
                 
                 media_type, media_url = get_media_from_entry(entry, feed_url)
@@ -236,7 +243,6 @@ def get_news_candidates(theme):
             
     print(f"Собрано всего новостей: {len(all_entries)}")
     
-    # 👇 УБРАЛИ САМЫЙ ПОСЛЕДНИЙ УРОВЕНЬ (где брались любые новости про РФ)
     c = [e for e in all_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match']]
     if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
     
@@ -272,9 +278,8 @@ def pick_most_important(candidates):
     if recent_titles:
         history_text = "УЖЕ ОПУБЛИКОВАНО РАНЕЕ:\n" + "\n".join(recent_titles) + "\n"
     
-    # 👇 СУПЕР-ЖЕСТКИЙ ПРОМПТ ДЛЯ ВЫБОРА (Запрет шоу-бизнеса)
     prompt = f"""Ты — редактор жесткого новостного канала. Выбери ОДИН самый интересный, конкретный или трагичный заголовок из списка.
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выбирать новости про шоу-бизнес, актеров, фигуристов, спектакли, концерты, спорт, развлечения или знаменитостей (например, Авербух, Петросян, Киркоров и т.д.).
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выбирать новости про шоу-бизнес, актеров, фигуристов, спектакли, концерты, спорт, развлечения или знаменитостей.
 Нам нужны только КОНКРЕТНЫЕ жесткие события (СВО, криминал, ДТП, катастрофы).
 
 {history_text}
@@ -456,7 +461,7 @@ def main():
                 post_body = rewrite_with_ai(best_news['title'], best_news['summary'], theme)
                 
                 if post_body is None:
-                    print("❌ Новость отклонена (шоу-бизнес или пустая сводка). Ищем в следующей теме...")
+                    print("❌ Новость отклонена. Ищем в следующей теме...")
                     continue
 
                 print(f"Сгенерированный текст:\n{post_body}\n")
