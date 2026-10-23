@@ -25,8 +25,9 @@ MAX_CHANNEL_ID = os.environ.get("MAX_CHANNEL_ID", "").strip()
 
 POST_PHOTO_TO_VK = True
 
-# 👇 1. СПИСОК ПРИОРИТЕТНЫХ КАНАЛОВ (Проверяются в первую очередь)
+# 👇 1. СПИСОК ПРИОРИТЕТНЫХ КАНАЛОВ (RSS)
 PRIORITY_FEEDS = [
+    "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=pilachzx&format=Atom", # 👈 Новый канал
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=slavaded1337&format=Atom",
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=novosti_efir&format=Atom",
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=botcharov&format=Atom",
@@ -129,113 +130,60 @@ def save_last_theme(theme):
     with open("last_theme.txt", "w", encoding="utf-8") as f:
         f.write(theme)
 
-def is_bad_image(url):
-    if not url: return True
-    url_lower = url.lower()
-    bad_words = ['logo', 'baza', 'mash', 'shot', 'placeholder', 'default', 'no-image', 'noimage']
-    return any(word in url_lower for word in bad_words)
-
-def fetch_og_image(article_url):
+def get_tg_web_videos(channel_name, theme, now):
+    videos = []
+    url = f"https://t.me/s/{channel_name}"
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        resp = requests.get(article_url, timeout=5, headers=headers)
-        if resp.status_code == 200:
-            match = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', resp.text, re.IGNORECASE)
-            if match:
-                img_url = match.group(1)
-                if not is_bad_image(img_url):
-                    return img_url
-            match_img = re.search(r'<img[^>]+src=["\']([^"\']+\.(?:jpg|jpeg|png))["\']', resp.text, re.IGNORECASE)
-            if match_img:
-                img_url = match_img.group(1)
-                if not is_bad_image(img_url):
-                    return img_url
-    except:
-        pass
-    return None
-
-def get_media_from_entry(entry, feed_url, article_url):
-    if 'enclosures' in entry:
-        for enc in entry.enclosures:
-            url = enc.get('href', '')
-            if url:
-                url = urljoin(feed_url, url)
-                if 'video' in enc.get('type', ''): return 'video', url
-
-    html_to_search = ""
-    if 'content' in entry:
-        for content_block in entry.content:
-            html_to_search += content_block.get('value', '')
-    html_to_search += entry.get('summary', entry.get('description', ''))
-
-    vid_match = re.search(r'(https?://[^\s"<>]+\.mp4)', html_to_search)
-    if vid_match:
-        return 'video', vid_match.group(1)
+        resp = requests.get(url, timeout=10, headers=headers)
+        if resp.status_code != 200:
+            return []
         
-    vid_tag_match = re.search(r'<video[^>]+src="([^">]+)"', html_to_search)
-    if vid_tag_match:
-        return 'video', urljoin(feed_url, vid_tag_match.group(1))
-
-    rss_image = None
-    if 'enclosures' in entry:
-        for enc in entry.enclosures:
-            url = enc.get('href', '')
-            if url and 'image' in enc.get('type', ''):
-                rss_image = urljoin(feed_url, url)
-                break
+        html_content = resp.text
+        posts = re.split(r'<div class="tgme_widget_message_wrap', html_content)
+        
+        for post in posts[1:]:
+            video_match = re.search(r'<video[^>]+src="([^"]+)"', post)
+            if not video_match:
+                continue
                 
-    if not rss_image and 'media_content' in entry:
-        for media in entry.media_content:
-            url = media.get('url', '')
-            if url and (media.get('medium') == 'image' or 'image' in media.get('type', '')):
-                rss_image = urljoin(feed_url, url)
-                break
-                
-    if not rss_image and 'media_thumbnail' in entry:
-        for thumb in entry.media_thumbnail:
-            url = thumb.get('url', '')
-            if url: 
-                rss_image = urljoin(feed_url, url)
-                break
-
-    if not rss_image:
-        img_match = re.search(r'<img[^>]+src="([^">]+)"', html_to_search)
-        if img_match:
-            rss_image = urljoin(feed_url, img_match.group(1))
-
-    if rss_image and not is_bad_image(rss_image):
-        return 'image', rss_image
-
-    if article_url:
-        og_img = fetch_og_image(article_url)
-        if og_img:
-            return 'image', og_img
+            video_url = video_match.group(1)
             
-    return None, None
-
-def is_theme_match(text, theme):
-    text_lower = text.lower()
-    for keyword in THEMES[theme]:
-        if re.search(r'(?:^|[^а-яё])' + re.escape(keyword), text_lower):
-            return True
-    return False
-
-def is_old_news(title, summary):
-    current_year = datetime.now().year
-    text = f"{title} {summary}".lower()
-    years = re.findall(r'\b(20\d{2})\b', text)
-    for year in years:
-        if int(year) < current_year:
-            return True
-    return False
-
-def is_russia_related(text):
-    text_lower = text.lower()
-    return any(kw in text_lower for kw in RUSSIA_KEYWORDS)
-
-def is_blacklisted(text):
-    text_lower = text.lower()
-    return any(word in text_lower for word in BLACKLIST_WORDS)
+            text_match = re.search(r'<div class="tgme_widget_message_text[^>]*>(.*?)</div>', post, re.DOTALL)
+            link_match = re.search(r'data-post="([^"]+)"', post)
+            
+            if not text_match or not link_match:
+                continue
+                
+            raw_text = text_match.group(1)
+            clean_text = re.sub(r'<[^>]+>', ' ', raw_text)
+            clean_text = html.unescape(clean_text).strip()
+            
+            if len(clean_text) < 20:
+                continue
+                
+            post_link = f"https://t.me/{link_match.group(1)}"
+            
+            if is_blacklisted(clean_text): continue
+            
+            full_text = clean_text
+            if not is_russia_related(full_text): continue
+            
+            if is_theme_match(full_text, theme):
+                videos.append({
+                    "title": clean_text[:60] + "...",
+                    "summary": clean_text,
+                    "age_hours": 1.0, 
+                    "media_type": "video",
+                    "media_url": video_url,
+                    "link": post_link,
+                    "theme_match": True,
+                    "russia_match": True,
+                    "has_media": True
+                })
+    except Exception as e:
+        pass
+    return videos
 
 def process_feeds(feed_list, theme, posted_links, posted_images, now):
     entries = []
@@ -266,14 +214,40 @@ def process_feeds(feed_list, theme, posted_links, posted_images, now):
                 if len(summary_clean) < 20: continue
                 if is_blacklisted(f"{title} {summary_clean}"): continue
                 
-                media_type, media_url = get_media_from_entry(entry, feed_url, link)
+                media_type = None
+                media_url = None
                 
+                if 'enclosures' in entry:
+                    for enc in entry.enclosures:
+                        url = enc.get('href', '')
+                        if url:
+                            url = urljoin(feed_url, url)
+                            if 'video' in enc.get('type', ''): 
+                                media_type, media_url = 'video', url
+                                break
+                            if 'image' in enc.get('type', ''):
+                                media_type, media_url = 'image', url
+
+                if not media_type:
+                    html_to_search = ""
+                    if 'content' in entry:
+                        for content_block in entry.content:
+                            html_to_search += content_block.get('value', '')
+                    html_to_search += entry.get('summary', entry.get('description', ''))
+                    
+                    vid_match = re.search(r'(https?://[^\s"<>]+\.mp4)', html_to_search)
+                    if vid_match:
+                        media_type, media_url = 'video', vid_match.group(1)
+                    else:
+                        img_match = re.search(r'<img[^>]+src="([^">]+)"', html_to_search)
+                        if img_match:
+                            media_type, media_url = 'image', urljoin(feed_url, img_match.group(1))
+
                 if not media_type:
                     continue
-
-                if media_type == 'image' and media_url:
-                    if clean_image_url(media_url) in posted_images:
-                        continue
+                
+                if media_type == 'image' and media_url and clean_image_url(media_url) in posted_images:
+                    continue
                 
                 full_text = f"{title} {summary}"
                 
@@ -297,40 +271,41 @@ def get_news_candidates(theme):
     posted_images = [clean_image_url(img) for img in get_posted_images()]
     now = datetime.now(timezone.utc)
     
-    # 👇 Собираем ВСЕ новости
+    print(f"  -> Ищем видео в веб-версиях Telegram-каналов...")
+    tg_videos = []
+    # 👇 Добавили pilachzx на первое место!
+    tg_channels = ["pilachzx", "slavaded1337", "novosti_efir", "botcharov", "mnogonazi", "SHOCKkzn", "mash", "bazabazon", "shot_shot"]
+    for ch in tg_channels:
+        vids = get_tg_web_videos(ch, theme, now)
+        tg_videos.extend(vids)
+        if len(tg_videos) >= 5:
+            break
+            
+    if tg_videos:
+        print(f"🔥 Найдено {len(tg_videos)} ВИДЕО в веб-версиях Telegram!")
+        return tg_videos[:5]
+
+    print("  -> Видео в веб-версиях не найдено. Проверяем RSS...")
     priority_entries = process_feeds(PRIORITY_FEEDS, theme, posted_links, posted_images, now)
     general_entries = process_feeds(RSS_FEEDS, theme, posted_links, posted_images, now)
     
     all_entries = priority_entries + general_entries
     print(f"Собрано всего новостей (с медиа): {len(all_entries)}")
     
-    # 🎥 ШАГ 1: ЖЕСТКИЙ ПРИОРИТЕТ ВИДЕО (Ищем видео во всех каналах!)
     c_video = [e for e in all_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'video']
-    if c_video:
-        print(f"🔥 Найдено {len(c_video)} новостей с ВИДЕО (до 12ч)! Отдаем приоритет видео.")
-        return sorted(c_video, key=lambda e: e['age_hours'])[:5]
+    if c_video: return sorted(c_video, key=lambda e: e['age_hours'])[:5]
 
-    # 🖼️ ШАГ 2: Видео нет. Ищем картинки в приоритетных каналах.
     c_img_priority = [e for e in priority_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
-    if c_img_priority: 
-        print(f"Видео не найдено. Берем {len(c_img_priority)} новостей с картинками из приоритетных.")
-        return sorted(c_img_priority, key=lambda e: e['age_hours'])[:5]
+    if c_img_priority: return sorted(c_img_priority, key=lambda e: e['age_hours'])[:5]
     
     c_img_priority_24 = [e for e in priority_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
-    if c_img_priority_24: 
-        print(f"Берем {len(c_img_priority_24)} новостей с картинками из приоритетных (до 24ч).")
-        return sorted(c_img_priority_24, key=lambda e: e['age_hours'])[:5]
+    if c_img_priority_24: return sorted(c_img_priority_24, key=lambda e: e['age_hours'])[:5]
 
-    # 🖼️ ШАГ 3: И в приоритетных пусто. Ищем картинки в общих.
     c_img_general = [e for e in general_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
-    if c_img_general: 
-        print(f"Берем {len(c_img_general)} новостей с картинками из общих.")
-        return sorted(c_img_general, key=lambda e: e['age_hours'])[:5]
+    if c_img_general: return sorted(c_img_general, key=lambda e: e['age_hours'])[:5]
 
     c_img_general_24 = [e for e in general_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
-    if c_img_general_24: 
-        print(f"Берем {len(c_img_general_24)} новостей с картинками из общих (до 24ч).")
-        return sorted(c_img_general_24, key=lambda e: e['age_hours'])[:5]
+    if c_img_general_24: return sorted(c_img_general_24, key=lambda e: e['age_hours'])[:5]
     
     return []
 
