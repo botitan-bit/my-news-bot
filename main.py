@@ -12,7 +12,6 @@ from vk_api.upload import VkUpload
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
 
-# Отключаем предупреждения об отключении SSL (для MAX)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
@@ -361,7 +360,6 @@ def send_to_vk(text, media_type, media_url):
         attachments = ""
         
         if POST_PHOTO_TO_VK and media_type == 'image' and media_url:
-            # 👇 УВЕЛИЧЕННАЯ ПАУЗА ПЕРЕД ЗАГРУЗКОЙ ФОТО
             print("ВК: Ждем 5 секунд перед загрузкой фото...")
             time.sleep(5) 
             
@@ -373,7 +371,6 @@ def send_to_vk(text, media_type, media_url):
                 print("ВК: Фото успешно загружено.")
             except Exception as e:
                 print(f"ВК: Ошибка загрузки фото -> {e}")
-                # 👇 ПОВТОРНАЯ ПОПЫТКА ПРИ FLOOD CONTROL
                 if "Flood control" in str(e):
                     print("ВК: Flood control при загрузке фото. Ждем 15 секунд и пробуем снова...")
                     time.sleep(15)
@@ -420,7 +417,6 @@ def send_to_max(text, media_type, media_url):
         payload["attachments"] = attachments
 
     try:
-        # 👇 ОТКЛЮЧАЕМ ПРОВЕРКУ СЕРТИФИКАТА ДЛЯ MAX (verify=False)
         response = requests.post(url, headers=headers, json=payload, timeout=30, verify=False)
         response.raise_for_status()
         print("✅ MAX: Успешно опубликовано!")
