@@ -44,7 +44,8 @@ THEMES = {
 THEME_ORDER = ["Политика", "СВО", "Мигранты", "Происшествия"]
 
 PRIMARY_MODEL = "openrouter/free"
-FALLBACK_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+# 👇 ЗАМЕНИЛИ УДАЛЕННУЮ МОДЕЛЬ НА СТАБИЛЬНУЮ QWEN
+FALLBACK_MODEL = "qwen/qwen-2.5-72b-instruct:free"
 
 RUSSIA_KEYWORDS = [
     "росси", "рф", "путин", "кремл", "москв", "петербург", "ленинград", "курск", "белгород", 
@@ -348,11 +349,9 @@ def send_to_vk(text, media_type, media_url):
         
     print("Отправляем пост во ВКонтакте...")
     
-    if not VK_TOKEN.startswith("vk1.a"):
-        print("ВК: Токен не начинается с 'vk1.a'. Фото не загрузится, будет только текст.")
-
+    # 👇 Очищаем теги и кавычки для ВК
     clean_text = re.sub(r'<[^>]+>', '', text)
-    clean_text = clean_text.replace('&quot;', '"').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').strip()
+    clean_text = html.unescape(clean_text).strip()
     
     try:
         vk_session = vk_api.VkApi(token=VK_TOKEN)
@@ -360,28 +359,13 @@ def send_to_vk(text, media_type, media_url):
         attachments = ""
         
         if POST_PHOTO_TO_VK and media_type == 'image' and media_url:
-            print("ВК: Ждем 5 секунд перед загрузкой фото...")
-            time.sleep(5) 
-            
             try:
                 img_data = requests.get(media_url, timeout=30).content
                 upload = VkUpload(vk_session)
                 photo = upload.photo_wall(io.BytesIO(img_data), group_id=int(VK_GROUP_ID))[0]
                 attachments = f"photo{photo['owner_id']}_{photo['id']}"
-                print("ВК: Фото успешно загружено.")
             except Exception as e:
-                print(f"ВК: Ошибка загрузки фото -> {e}")
-                if "Flood control" in str(e):
-                    print("ВК: Flood control при загрузке фото. Ждем 15 секунд и пробуем снова...")
-                    time.sleep(15)
-                    try:
-                        img_data = requests.get(media_url, timeout=30).content
-                        upload = VkUpload(vk_session)
-                        photo = upload.photo_wall(io.BytesIO(img_data), group_id=int(VK_GROUP_ID))[0]
-                        attachments = f"photo{photo['owner_id']}_{photo['id']}"
-                        print("ВК: Фото успешно загружено со второй попытки.")
-                    except Exception as retry_e:
-                        print(f"ВК: Повторная ошибка загрузки фото -> {retry_e}. Постим только текст.")
+                print(f"ВК: Ошибка загрузки фото -> {e}. Постим только текст.")
         
         vk.wall.post(owner_id=f"-{VK_GROUP_ID}", message=clean_text, attachments=attachments, from_group=1)
         print("✅ ВК: Успешно опубликовано!")
@@ -396,6 +380,10 @@ def send_to_max(text, media_type, media_url):
         return False
         
     print("Отправляем пост в MAX...")
+    
+    # 👇 Очищаем теги и кавычки для MAX
+    clean_text = re.sub(r'<[^>]+>', '', text)
+    clean_text = html.unescape(clean_text).strip()
     
     url = f"https://platform-api2.max.ru/messages?chat_id={MAX_CHANNEL_ID}"
     headers = {
@@ -412,7 +400,7 @@ def send_to_max(text, media_type, media_url):
             }
         })
     
-    payload = {"text": text}
+    payload = {"text": clean_text}
     if attachments:
         payload["attachments"] = attachments
 
@@ -423,8 +411,6 @@ def send_to_max(text, media_type, media_url):
         return True
     except Exception as e:
         print(f"❌ MAX Ошибка: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            print("Ответ сервера MAX:", e.response.text)
         return False
 
 def main():
