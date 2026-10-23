@@ -45,7 +45,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # 👇 ДОБАВЛЕНЫ ФАЙЛЫ published_titles.txt и posted_images.txt
           git add last_theme.txt posted_news.txt published_titles.txt posted_images.txt
           git commit -m "Update bot state [skip ci]" || echo "No changes to commit"
           git pull --rebase origin main || true
