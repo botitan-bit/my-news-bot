@@ -36,17 +36,19 @@ THEMES = {
 }
 THEME_ORDER = ["Политика", "СВО", "Мигранты", "Происшествия"]
 
-PRIMARY_MODEL = "qwen/qwen3.6-plus-preview:free"
-FALLBACK_MODEL = "openrouter/free"
+# 👇 СТАВИМ УНИВЕРСАЛЬНУЮ МОДЕЛЬ ОСНОВНОЙ
+PRIMARY_MODEL = "openrouter/free"
+FALLBACK_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
-# 👇 СПИСОК КЛЮЧЕВЫХ СЛОВ ДЛЯ ГЕОГРАФИЧЕСКОГО ФИЛЬТРА (ТОЛЬКО РФ)
+# 👇 РАСШИРИЛИ СПИСОК ГОРОДОВ, НО ТЕПЕРЬ ГЛАВНАЯ НАДЕЖДА НА ИИ
 RUSSIA_KEYWORDS = [
     "росси", "рф", "путин", "кремл", "москв", "петербург", "ленинград", "курск", "белгород", 
     "донбасс", "донецк", "луганск", "крым", "севастопол", "херсон", "запорож", "госдум", 
     "совфед", "мид", "минобороны", "росгвард", "фсб", "мвд", "мчс", "чечн", "татарстан", 
     "башкир", "сибир", "урал", "кавказ", "ростов", "краснодар", "самара", "екатеринбург", 
     "новосибирск", "омск", "томск", "иркутск", "якут", "владивосток", "хабаровск", 
-    "сво", "всу", "дрон", "бпла", "фронт", "шойгу", "белоусов", "губернатор"
+    "сво", "всу", "дрон", "бпла", "фронт", "шойгу", "белоусов", "губернатор",
+    "сочи", "камчатк", "чукотк", "перм", "геленджик", "иванов", "нижний новгород", "певек", "аэропорт"
 ]
 
 def get_posted_links():
@@ -119,7 +121,6 @@ def is_old_news(title, summary):
             return True
     return False
 
-# 👇 НОВАЯ ФУНКЦИЯ: Проверка, что новость про Россию
 def is_russia_related(text):
     text_lower = text.lower()
     return any(kw in text_lower for kw in RUSSIA_KEYWORDS)
@@ -132,7 +133,7 @@ def get_news_candidates(theme):
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:30]:
+            for entry in feed.entries[:40]: # Увеличили до 40, чтобы найти больше российских
                 link = entry.get("link", "")
                 if link in posted_links: continue
 
@@ -148,10 +149,10 @@ def get_news_candidates(theme):
                 full_text = f"{title} {summary}"
                 
                 if is_old_news(title, summary): continue
-
-                # 👇 ПРИМЕНЯЕМ ГЕОГРАФИЧЕСКИЙ ФИЛЬТР
+                
+                # Оставляем жесткий фильтр, но он теперь умнее
                 if not is_russia_related(full_text):
-                    print(f"Отсеяна зарубежная новость: {title}")
+                    print(f"Отсеяна зарубежная новость (по ключевым словам): {title}")
                     continue
 
                 if is_theme_match(full_text, theme):
@@ -192,7 +193,12 @@ def call_openrouter(prompt):
 def pick_most_important(candidates):
     if not candidates: return None
     titles_list = "\n".join([f"{i}. {c['title']}" for i, c in enumerate(candidates)])
-    prompt = f"Ты главный редактор. Выбери ОДИН самый важный заголовок из списка (ответь только цифрой от 0 до {len(candidates)-1}):\n{titles_list}"
+    # 👇 ДОБАВИЛИ ПРАВИЛО ПРО РОССИЮ В ПРОМПТ ИИ
+    prompt = f"""Ты главный редактор новостного канала.
+Выбери ОДИН самый важный заголовок из списка. 
+ОБЯЗАТЕЛЬНОЕ УСЛОВИЕ: Новость должна касаться России (её регионов, городов, граждан, политики или экономики). Игнорируй мировые новости, если они не связаны с РФ напрямую.
+Ответь только цифрой от 0 до {len(candidates)-1}:\n{titles_list}"""
+    
     answer = call_openrouter(prompt)
     match = re.search(r'\d+', answer)
     if match:
@@ -215,7 +221,7 @@ def rewrite_with_ai(title, summary, theme):
 2. После закрывающего тега </b> сделай ДВА переноса строки (оставь пустую строку).
 3. Текст: Возьми исходный текст. Исправь только орфографические, грамматические ошибки и пунктуацию. Если текст обрывается на полуслове, аккуратно заверши мысль.
 4. Добавь 1-2 уместных эмодзи в начало текста.
-5. Не добавляй никаких своих комментариев, вступлений или выводов. Дай только готовый пост.
+5. Не добавляй никаких своих комментариев. Дай только готовый пост.
 
 Рубрика: {theme}
 Исходный заголовок: {title}
@@ -275,8 +281,12 @@ def send_to_telegram(text, media_type, media_url):
     except: pass
     return False
 
+# 👇 ДЕТАЛЬНЫЙ ВЫВОД ОШИБКИ ВК
 def send_to_vk(text, media_type, media_url):
-    if not VK_TOKEN or not VK_GROUP_ID: return False
+    if not VK_TOKEN or not VK_GROUP_ID: 
+        print("ВК: Нет токена или ID группы.")
+        return False
+        
     print("Отправляем пост во ВКонтакте...")
     clean_text = text.replace('<b>', '').replace('</b>', '').replace('&quot;', '"').replace('&amp;', '&')
     try:
@@ -290,12 +300,16 @@ def send_to_vk(text, media_type, media_url):
                 photo = upload.photo_wall(io.BytesIO(img_data), group_id=VK_GROUP_ID)[0]
                 attachments = f"photo{photo['owner_id']}_{photo['id']}"
             except Exception as e:
-                print(f"ВК: не удалось загрузить фото ({e}). Постим только текст.")
+                print(f"ВК: Не удалось загрузить фото ({e}). Постим только текст.")
+        
         vk.wall.post(owner_id=f"-{VK_GROUP_ID}", message=clean_text, attachments=attachments, from_group=1)
         print("ВК: Успешно опубликовано!")
         return True
     except Exception as e:
         print(f"ВК Ошибка: {e}")
+        # Выводим полный ответ сервера ВК, чтобы понять в чем дело
+        if hasattr(e, 'response') and e.response is not None:
+            print("Ответ сервера ВК:", e.response.text)
         return False
 
 def main():
