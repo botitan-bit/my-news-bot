@@ -591,7 +591,6 @@ def send_to_max(text, media_type, media_url):
     
     try:
         if media_type == 'video' and media_url:
-            # 1. Скачиваем видео
             print("  -> Скачиваем видео для MAX...")
             video_data = requests.get(media_url, timeout=30).content
             
@@ -599,7 +598,6 @@ def send_to_max(text, media_type, media_url):
                 print("  ❌ Видео больше 250 МБ, MAX его не примет.")
                 return False
             
-            # 2. Получаем URL для загрузки
             print("  -> Запрашиваем URL для загрузки в MAX...")
             upload_url_resp = requests.post(
                 "https://platform-api2.max.ru/uploads?type=video",
@@ -617,20 +615,25 @@ def send_to_max(text, media_type, media_url):
                 print("  ❌ MAX не вернул URL или токен для загрузки.")
                 return False
             
-            # 3. Загружаем видео
             print("  -> Загружаем видео в MAX...")
-            files = {'data': ('video.mp4', video_data)}
-            upload_resp = requests.post(upload_url, files=files, timeout=60)
+            # 👇 ДОБАВЛЕН ЗАГОЛОВОК AUTHORIZATION ИСПРАВЛЯЕТ ОШИБКУ 400
+            upload_resp = requests.post(
+                upload_url,
+                headers={"Authorization": MAX_BOT_TOKEN},
+                files={'data': ('video.mp4', video_data)},
+                timeout=60
+            )
             upload_resp.raise_for_status()
             
-            # 4. Добавляем вложение
+            print("  ✅ Видео загружено. Ждем обработки...")
+            time.sleep(3) # Пауза для обработки видео на сервере MAX
+            
             attachments.append({
                 "type": "video",
                 "payload": {"token": media_token}
             })
             
         elif media_type == 'image' and media_url:
-            # Для картинок MAX поддерживает прямые ссылки
             attachments.append({
                 "type": "image",
                 "payload": {"url": media_url}
@@ -638,7 +641,6 @@ def send_to_max(text, media_type, media_url):
     
     except Exception as e:
         print(f"  ⚠️ Ошибка подготовки медиа для MAX: {e}")
-        # Если не удалось подготовить медиа, отправляем только текст
         attachments = []
 
     payload = {"text": clean_text, "format": "markdown"}
