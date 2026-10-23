@@ -76,7 +76,7 @@ BLACKLIST_WORDS = [
     "шоу-бизнес", "актер", "актриса", "певец", "певица", "звезда", "сериал", "фильм", "премьера", "инстаграм", "тикток",
     "спектакль", "ледовый", "фигурист", "авербух", "петросян", "концерт", "развлечение", "шоу", "праздник", "фестиваль", "выступление",
     "продолжают спецоперацию", "выполняют задачи", "боевая готовность", "полная готовность", "активные действия", "выполняют боевые задачи", "решают задачи", "контроль над ситуацией",
-    "автобус", "маршрутка", "прямой эфир", "прямая трансляция", "смотрите эфир", "ожидается эфир" # 👈 ЗАПРЕТ ЭФИРОВ
+    "автобус", "маршрутка", "прямой эфир", "прямая трансляция", "смотрите эфир", "ожидается эфир"
 ]
 
 def get_posted_links():
@@ -165,38 +165,56 @@ def get_tg_web_videos(channel_name, theme, now):
         soup = BeautifulSoup(resp.text, "html.parser")
         posts = soup.select(".tgme_widget_message[data-post]")
         
+        # 👇 ОТЛАДКА: Сколько постов всего на странице
+        if not posts:
+            print(f"  [{channel_name}] Постов не найдено (возможно, канал закрыт или изменилась верстка).")
+            return []
+        
+        print(f"  [{channel_name}] Всего постов на странице: {len(posts)}")
+        
         for post in reversed(posts):
-            # Ищем видео (тег video или ссылку на .mp4 в data-атрибутах)
+            video_url = None
+            
+            # 1. Ищем через тег <video>
             video_tag = post.select_one("video[src]")
-            if not video_tag:
-                # Иногда Telegram прячет видео в ссылке-обложке
+            if video_tag and video_tag.get("src"):
+                video_url = video_tag.get("src")
+            
+            # 2. Если нет, ищем через ссылку плеера
+            if not video_url:
                 video_link = post.select_one("a.tgme_widget_message_video_player")
                 if video_link and video_link.get("href"):
-                    pass # Нам нужен именно src видео
-                continue
-                
-            video_url = video_tag.get("src")
+                    video_url = video_link.get("href")
+            
+            # 3. Если нет, ищем в стиле превью
+            if not video_url:
+                video_thumb = post.select_one("i.tgme_widget_message_video_thumb")
+                if video_thumb and video_thumb.get("style"):
+                    match = re.search(r"url\('([^']+)'\)", video_thumb.get("style", ""))
+                    if match:
+                        video_url = match.group(1)
+            
             if not video_url:
                 continue
-                
+            
             if video_url.startswith("//"):
                 video_url = "https:" + video_url
-                
+            
             text_tag = post.select_one(".tgme_widget_message_text")
             if not text_tag:
                 continue
-                
+            
             clean_text = text_tag.get_text("\n", strip=True)
             if len(clean_text) < 20:
                 continue
-                
+            
             post_id = post.get("data-post", "")
             post_link = f"https://t.me/{post_id}"
             
             if is_blacklisted(clean_text): continue
             if not is_russia_related(clean_text): continue
             if not is_theme_match(clean_text, theme): continue
-                
+            
             videos.append({
                 "title": clean_text[:60] + "...",
                 "summary": clean_text,
@@ -208,6 +226,9 @@ def get_tg_web_videos(channel_name, theme, now):
                 "russia_match": True,
                 "has_media": True
             })
+        
+        if not videos:
+            print(f"  [{channel_name}] Видео не найдено после фильтрации.")
     except Exception as e:
         print(f"Ошибка парсинга {channel_name}: {e}")
     return videos
@@ -262,7 +283,6 @@ def process_feeds(feed_list, theme, posted_links, posted_images, now):
                             html_to_search += content_block.get('value', '')
                     html_to_search += entry.get('summary', entry.get('description', ''))
                     
-                    # 👇 Ищем mp4 в тексте или тег <video src="...">
                     vid_match = re.search(r'(https?://[^\s"<>]+\.mp4)', html_to_search)
                     if vid_match:
                         media_type, media_url = 'video', vid_match.group(1)
@@ -400,10 +420,9 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
-    # 👇 ДОБАВИЛИ ЖЕСТКИЙ ЗАПРЕТ НА ЭФИРЫ
     prompt = f"""Ты — профессиональный редактор. Перепиши новость так, чтобы она была понятной, цепляющей и ТОЛЬКО НА РУССКОМ ЯЗЫКЕ.
 КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ любые английские слова и фразы вроде "ожидается прямой эфир" или "смотрите трансляцию".
-Мы публикуем только то, что уже произошло. Если в исходном тексте ТОЛЬКО общие фразы или обещания эфира, напиши слово NONE.
+Если в исходном тексте ТОЛЬКО общие фразы или обещания эфира, напиши слово NONE.
 
 Формат ответа:
 1. Заголовок в теге <b>...</b>. Сделай его громким и понятным.
