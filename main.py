@@ -25,6 +25,16 @@ MAX_CHANNEL_ID = os.environ.get("MAX_CHANNEL_ID", "").strip()
 
 POST_PHOTO_TO_VK = True
 
+# 👇 1. СПИСОК ПРИОРИТЕТНЫХ КАНАЛОВ (Проверяются в первую очередь)
+PRIORITY_FEEDS = [
+    "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=slavaded1337&format=Atom",
+    "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=novosti_efir&format=Atom",
+    "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=botcharov&format=Atom",
+    "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=mnogonazi&format=Atom",
+    "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=SHOCKkzn&format=Atom",
+]
+
+# 👇 2. ОБЩИЙ СПИСОК ИСТОЧНИКОВ (Если в приоритетных пусто)
 RSS_FEEDS = [
     "https://lenta.ru/rss/news",
     "https://ria.ru/export/rss2/archive/index.xml",
@@ -119,26 +129,32 @@ def save_last_theme(theme):
     with open("last_theme.txt", "w", encoding="utf-8") as f:
         f.write(theme)
 
-# 👇 НОВАЯ ФУНКЦИЯ: Ищем главную картинку (og:image) на странице статьи
+def is_bad_image(url):
+    if not url: return True
+    url_lower = url.lower()
+    bad_words = ['logo', 'baza', 'mash', 'shot', 'placeholder', 'default', 'no-image', 'noimage']
+    return any(word in url_lower for word in bad_words)
+
 def fetch_og_image(article_url):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         resp = requests.get(article_url, timeout=5, headers=headers)
         if resp.status_code == 200:
-            # Ищем тег og:image
             match = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', resp.text, re.IGNORECASE)
             if match:
-                return match.group(1)
-            # Если og:image нет, ищем первую большую картинку в тексте
+                img_url = match.group(1)
+                if not is_bad_image(img_url):
+                    return img_url
             match_img = re.search(r'<img[^>]+src=["\']([^"\']+\.(?:jpg|jpeg|png))["\']', resp.text, re.IGNORECASE)
             if match_img:
-                return match_img.group(1)
+                img_url = match_img.group(1)
+                if not is_bad_image(img_url):
+                    return img_url
     except:
         pass
     return None
 
 def get_media_from_entry(entry, feed_url, article_url):
-    # 1. Проверяем видео (оставляем приоритет)
     if 'enclosures' in entry:
         for enc in entry.enclosures:
             url = enc.get('href', '')
@@ -160,7 +176,6 @@ def get_media_from_entry(entry, feed_url, article_url):
     if vid_tag_match:
         return 'video', urljoin(feed_url, vid_tag_match.group(1))
 
-    # 2. Ищем картинку в RSS
     rss_image = None
     if 'enclosures' in entry:
         for enc in entry.enclosures:
@@ -188,15 +203,14 @@ def get_media_from_entry(entry, feed_url, article_url):
         if img_match:
             rss_image = urljoin(feed_url, img_match.group(1))
 
-    # 3. Если картинка в RSS есть, но мы хотим лучшую - пробуем спарсить og:image
+    if rss_image and not is_bad_image(rss_image):
+        return 'image', rss_image
+
     if article_url:
         og_img = fetch_og_image(article_url)
         if og_img:
             return 'image', og_img
             
-    if rss_image:
-        return 'image', rss_image
-
     return None, None
 
 def is_theme_match(text, theme):
@@ -223,13 +237,10 @@ def is_blacklisted(text):
     text_lower = text.lower()
     return any(word in text_lower for word in BLACKLIST_WORDS)
 
-def get_news_candidates(theme):
-    posted_links = get_posted_links()
-    posted_images = [clean_image_url(img) for img in get_posted_images()]
-    now = datetime.now(timezone.utc)
-    
-    all_entries = []
-    for feed_url in RSS_FEEDS:
+def process_feeds(feed_list, theme, posted_links, posted_images, now):
+    """Вспомогательная функция для обработки списка лент."""
+    entries = []
+    for feed_url in feed_list:
         try:
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
             resp = requests.get(feed_url, timeout=10, headers=headers)
@@ -256,7 +267,6 @@ def get_news_candidates(theme):
                 if len(summary_clean) < 20: continue
                 if is_blacklisted(f"{title} {summary_clean}"): continue
                 
-                # 👇 Передаем ссылку на статью, чтобы вытащить og:image
                 media_type, media_url = get_media_from_entry(entry, feed_url, link)
                 
                 if not media_type:
@@ -268,7 +278,7 @@ def get_news_candidates(theme):
                 
                 full_text = f"{title} {summary}"
                 
-                all_entries.append({
+                entries.append({
                     "title": title,
                     "summary": summary_clean,
                     "age_hours": age_hours,
@@ -281,23 +291,42 @@ def get_news_candidates(theme):
                 })
         except Exception as e:
             pass
-            
-    print(f"Собрано всего новостей: {len(all_entries)}")
-    
-    c_video = [e for e in all_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'video']
-    if c_video:
-        print(f"🔥 Найдено {len(c_video)} новостей с ВИДЕО (до 12ч)!")
-        return sorted(c_video, key=lambda e: e['age_hours'])[:5]
+    return entries
 
-    c_img_12 = [e for e in all_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
-    if c_img_12: 
-        print(f"Видео не найдено. Берем {len(c_img_12)} новостей с картинками (до 12ч).")
-        return sorted(c_img_12, key=lambda e: e['age_hours'])[:5]
+def get_news_candidates(theme):
+    posted_links = get_posted_links()
+    posted_images = [clean_image_url(img) for img in get_posted_images()]
+    now = datetime.now(timezone.utc)
     
-    c_img_24 = [e for e in all_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
-    if c_img_24: 
-        print(f"Берем {len(c_img_24)} новостей с картинками (до 24ч).")
-        return sorted(c_img_24, key=lambda e: e['age_hours'])[:5]
+    # 👇 ШАГ 1: Проверяем ПРИОРИТЕТНЫЕ каналы
+    print(f"  -> Проверяем приоритетные каналы...")
+    priority_entries = process_feeds(PRIORITY_FEEDS, theme, posted_links, posted_images, now)
+    
+    if priority_entries:
+        print(f"  ✅ В приоритетных каналах найдено {len(priority_entries)} новостей.")
+        # Логика приоритета видео и свежести для приоритетных
+        c_video = [e for e in priority_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'video']
+        if c_video: return sorted(c_video, key=lambda e: e['age_hours'])[:5]
+        
+        c_img = [e for e in priority_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
+        if c_img: return sorted(c_img, key=lambda e: e['age_hours'])[:5]
+        
+        c_img_24 = [e for e in priority_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
+        if c_img_24: return sorted(c_img_24, key=lambda e: e['age_hours'])[:5]
+    
+    # 👇 ШАГ 2: Если в приоритетных пусто, идем в общий список
+    print(f"  -> В приоритетных пусто. Переходим к общим источникам...")
+    general_entries = process_feeds(RSS_FEEDS, theme, posted_links, posted_images, now)
+    print(f"Собрано всего новостей из общих источников: {len(general_entries)}")
+    
+    c_video = [e for e in general_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'video']
+    if c_video: return sorted(c_video, key=lambda e: e['age_hours'])[:5]
+
+    c_img_12 = [e for e in general_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
+    if c_img_12: return sorted(c_img_12, key=lambda e: e['age_hours'])[:5]
+    
+    c_img_24 = [e for e in general_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
+    if c_img_24: return sorted(c_img_24, key=lambda e: e['age_hours'])[:5]
     
     return []
 
