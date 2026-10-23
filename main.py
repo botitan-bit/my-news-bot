@@ -12,7 +12,6 @@ from vk_api.upload import VkUpload
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
 
-# Отключаем предупреждения SSL для MAX
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
@@ -206,17 +205,15 @@ def get_news_candidates(theme):
     return []
 
 def call_groq(prompt):
-    if not GROQ_API_KEY:
-        print("❌ Нет GROQ_API_KEY!")
-        return ""
+    if not GROQ_API_KEY: return ""
         
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json",
     }
-    # 👇 ИСПРАВЛЕНА МОДЕЛЬ GROQ НА СТАБИЛЬНУЮ
-    payload = {"model": "llama3-70b-8192", "messages": [{"role": "user", "content": prompt}]}
+    # 👇 САМАЯ СТАБИЛЬНАЯ МОДЕЛЬ GROQ
+    payload = {"model": "llama-3.1-8b-instant", "messages": [{"role": "user", "content": prompt}]}
     
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=10)
@@ -230,11 +227,8 @@ def pick_most_important(candidates):
     if not candidates: return None
     titles_list = "\n".join([f"{i}. {c['title']}" for i, c in enumerate(candidates)])
     
-    prompt = f"""Ты главный редактор серьезного новостного канала про Россию.
-Выбери ОДИН самый важный заголовок из списка. 
-Игнорируй спорт, пиво, шоу-бизнес и мелкие бытовые новости.
-Ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}).
-
+    prompt = f"""Ты главный редактор. Выбери ОДИН самый важный заголовок. 
+Игнорируй спорт и мелкие бытовые новости. Ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}).
 Список:
 {titles_list}"""
     
@@ -254,35 +248,26 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
-    prompt = f"""Ты — профессиональный редактор. Перепиши новость кратко и по делу.
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО упоминать источники (сайты) и писать служебные слова.
-
-Требования:
-1. Твой ответ должен начинаться СРАЗУ с заголовка, обернутого в тег <b>...</b>.
-2. После </b> сделай ДВА переноса строки.
-3. Затем напиши 1-2 уместных эмодзи и краткий текст новости (суть, факты).
-4. Никаких вступлений и комментариев.
+    prompt = f"""Ты — профессиональный редактор. Перепиши новость кратко.
+Запрещено упоминать источники и писать служебные слова.
+Формат ответа:
+1. Заголовок в теге <b>...</b>.
+2. ДВА переноса строки.
+3. 1-2 эмодзи и краткий текст.
 
 Исходный заголовок: {title}
 Исходный текст: {summary}
 """
     raw_text = call_groq(prompt)
     
-    # СТРАХОВКА
     if not raw_text:
         print("⚠️ ИИ недоступен. Применяем страховку (сырой текст).")
         clean_summary = summary.strip()
-        if len(clean_summary) > 600:
-            clean_summary = clean_summary[:600] + "..."
+        if len(clean_summary) > 600: clean_summary = clean_summary[:600] + "..."
         return sanitize_html(f"<b>{title}</b>\n\n📰 {clean_summary}")
         
     raw_text = re.sub(r'^(Category|Рубрика|Категория):.*?\n', '', raw_text, flags=re.IGNORECASE)
-    clean_patterns = [
-        r'—\s*в материале[^.]*\.', r'—\s*подробнее[^.]*\.', 
-        r'—\s*читайте[^.]*\.', r'—\s*на сайте[^.]*\.', 
-        r'сообщает[^.]*\.', r'источник:[^\n]*'
-    ]
-    for pattern in clean_patterns:
+    for pattern in [r'—\s*в материале[^.]*\.', r'—\s*подробнее[^.]*\.', r'—\s*читайте[^.]*\.', r'—\s*на сайте[^.]*\.', r'сообщает[^.]*\.', r'источник:[^\n]*']:
         raw_text = re.sub(pattern, '', raw_text, flags=re.IGNORECASE)
 
     raw_text = re.sub(r'</b>\s*', '</b>\n\n', raw_text)
