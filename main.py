@@ -213,7 +213,6 @@ def get_tg_web_videos(channel_name, theme, now):
             if video_url.startswith("//"):
                 video_url = "https:" + video_url
             
-            # 👇 ПРОВЕРКА НА ДУБЛЬ ПО URL ВИДЕО
             if video_url in posted_videos:
                 continue
             
@@ -387,7 +386,6 @@ def send_video(video_url, caption):
         if r.status_code == 200: return True
     except: pass
     try:
-        # 👇 ДОБАВИЛИ ЗАГОЛОВКИ ДЛЯ СКАЧИВАНИЯ ВИДЕО
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
             'Referer': 'https://t.me/'
@@ -408,7 +406,6 @@ def send_video(video_url, caption):
         data = {"chat_id": TELEGRAM_CHANNEL_ID, "caption": caption, "parse_mode": "HTML", "supports_streaming": True}
         r = requests.post(url, data=data, files=files, timeout=30)
         if r.status_code == 200: 
-            # 👇 СОХРАНЯЕМ ХЕШ ВИДЕО
             save_posted_video(video_hash)
             return True
     except Exception as e:
@@ -451,7 +448,7 @@ def send_to_max(text, media_type, media_url):
         print("MAX: Нет токена или ID канала.")
         return False
         
-    print("Отправляем пост в MAX...")
+    print(f"Отправляем пост в MAX (канал: {MAX_CHANNEL_ID})...") # 👈 ДОБАВИЛИ ID КАНАЛА В ЛОГ
     clean_text = text.replace('<b>', '**').replace('</b>', '**')
     clean_text = html.unescape(clean_text).strip()
     clean_text = f"{clean_text}\n\n{SIGNATURE_MAX}"
@@ -466,7 +463,6 @@ def send_to_max(text, media_type, media_url):
     try:
         if media_type == 'video' and media_url:
             print("  -> Скачиваем видео для MAX...")
-            # 👇 ДОБАВИЛИ ЗАГОЛОВКИ ДЛЯ СКАЧИВАНИЯ
             download_headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
                 'Referer': 'https://t.me/'
@@ -517,7 +513,7 @@ def send_to_max(text, media_type, media_url):
                 return False
                 
             print("  ✅ Видео загружено. Ждем обработки на сервере MAX...")
-            time.sleep(5) 
+            time.sleep(15) # 👈 УВЕЛИЧИЛИ ПАУЗУ ОБРАТНО ДО 15 СЕКУНД
             
             attachments.append({
                 "type": "video",
@@ -538,12 +534,14 @@ def send_to_max(text, media_type, media_url):
     if attachments:
         payload["attachments"] = attachments
 
-    # 👇 УЛУЧШЕННЫЙ ЦИКЛ ПОВТОРНЫХ ПОПЫТОК
     max_retries = 3
     for attempt in range(max_retries):
         try:
             url = f"https://platform-api2.max.ru/messages?chat_id={MAX_CHANNEL_ID}"
             response = requests.post(url, headers=headers, json=payload, timeout=20, verify=False)
+            
+            # 👇 ДОБАВИЛИ ПОДРОБНЫЙ ВЫВОД ОТВЕТА ОТ MAX
+            print(f"  DEBUG: Ответ MAX (попытка {attempt+1}): {response.status_code} - {response.text}")
             
             if response.status_code == 200:
                 print("✅ MAX: Успешно опубликовано!")
@@ -552,7 +550,7 @@ def send_to_max(text, media_type, media_url):
                 error_data = response.json()
                 if error_data.get("code") == "attachment.not.ready":
                     if attempt < max_retries - 1:
-                        wait_time = (attempt + 1) * 5  # 5, 10, 15 секунд
+                        wait_time = (attempt + 1) * 10
                         print(f"  ⏳ Файл ещё не обработан (попытка {attempt+1}/{max_retries}). Ждем {wait_time} секунд...")
                         time.sleep(wait_time)
                         continue
@@ -568,7 +566,7 @@ def send_to_max(text, media_type, media_url):
         except Exception as e:
             print(f"  ❌ Ошибка отправки в MAX (попытка {attempt+1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
-                time.sleep(5)
+                time.sleep(10)
             else:
                 return False
     return False
