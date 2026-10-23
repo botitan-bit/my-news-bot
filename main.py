@@ -119,22 +119,32 @@ def save_last_theme(theme):
     with open("last_theme.txt", "w", encoding="utf-8") as f:
         f.write(theme)
 
-def get_media_from_entry(entry, feed_url):
+# 👇 НОВАЯ ФУНКЦИЯ: Ищем главную картинку (og:image) на странице статьи
+def fetch_og_image(article_url):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        resp = requests.get(article_url, timeout=5, headers=headers)
+        if resp.status_code == 200:
+            # Ищем тег og:image
+            match = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', resp.text, re.IGNORECASE)
+            if match:
+                return match.group(1)
+            # Если og:image нет, ищем первую большую картинку в тексте
+            match_img = re.search(r'<img[^>]+src=["\']([^"\']+\.(?:jpg|jpeg|png))["\']', resp.text, re.IGNORECASE)
+            if match_img:
+                return match_img.group(1)
+    except:
+        pass
+    return None
+
+def get_media_from_entry(entry, feed_url, article_url):
+    # 1. Проверяем видео (оставляем приоритет)
     if 'enclosures' in entry:
         for enc in entry.enclosures:
             url = enc.get('href', '')
             if url:
                 url = urljoin(feed_url, url)
                 if 'video' in enc.get('type', ''): return 'video', url
-                if 'image' in enc.get('type', ''): return 'image', url
-
-    if 'media_content' in entry:
-        for media in entry.media_content:
-            url = media.get('url', '')
-            if url:
-                url = urljoin(feed_url, url)
-                if media.get('medium') == 'video' or 'video' in media.get('type', ''): return 'video', url
-                if media.get('medium') == 'image' or 'image' in media.get('type', ''): return 'image', url
 
     html_to_search = ""
     if 'content' in entry:
@@ -150,14 +160,42 @@ def get_media_from_entry(entry, feed_url):
     if vid_tag_match:
         return 'video', urljoin(feed_url, vid_tag_match.group(1))
 
-    if 'media_thumbnail' in entry:
+    # 2. Ищем картинку в RSS
+    rss_image = None
+    if 'enclosures' in entry:
+        for enc in entry.enclosures:
+            url = enc.get('href', '')
+            if url and 'image' in enc.get('type', ''):
+                rss_image = urljoin(feed_url, url)
+                break
+                
+    if not rss_image and 'media_content' in entry:
+        for media in entry.media_content:
+            url = media.get('url', '')
+            if url and (media.get('medium') == 'image' or 'image' in media.get('type', '')):
+                rss_image = urljoin(feed_url, url)
+                break
+                
+    if not rss_image and 'media_thumbnail' in entry:
         for thumb in entry.media_thumbnail:
             url = thumb.get('url', '')
-            if url: return 'image', urljoin(feed_url, url)
+            if url: 
+                rss_image = urljoin(feed_url, url)
+                break
 
-    img_match = re.search(r'<img[^>]+src="([^">]+)"', html_to_search)
-    if img_match:
-        return 'image', urljoin(feed_url, img_match.group(1))
+    if not rss_image:
+        img_match = re.search(r'<img[^>]+src="([^">]+)"', html_to_search)
+        if img_match:
+            rss_image = urljoin(feed_url, img_match.group(1))
+
+    # 3. Если картинка в RSS есть, но мы хотим лучшую - пробуем спарсить og:image
+    if article_url:
+        og_img = fetch_og_image(article_url)
+        if og_img:
+            return 'image', og_img
+            
+    if rss_image:
+        return 'image', rss_image
 
     return None, None
 
@@ -218,7 +256,8 @@ def get_news_candidates(theme):
                 if len(summary_clean) < 20: continue
                 if is_blacklisted(f"{title} {summary_clean}"): continue
                 
-                media_type, media_url = get_media_from_entry(entry, feed_url)
+                # 👇 Передаем ссылку на статью, чтобы вытащить og:image
+                media_type, media_url = get_media_from_entry(entry, feed_url, link)
                 
                 if not media_type:
                     continue
@@ -245,19 +284,16 @@ def get_news_candidates(theme):
             
     print(f"Собрано всего новостей: {len(all_entries)}")
     
-    # 🎥 1. ЖЕСТКИЙ ПРИОРИТЕТ ВИДЕО: Если есть видео (до 12ч) - берем ТОЛЬКО его!
     c_video = [e for e in all_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'video']
     if c_video:
-        print(f"🔥 Найдено {len(c_video)} новостей с ВИДЕО (до 12ч)! Отдаем приоритет видео.")
+        print(f"🔥 Найдено {len(c_video)} новостей с ВИДЕО (до 12ч)!")
         return sorted(c_video, key=lambda e: e['age_hours'])[:5]
 
-    # 🖼️ 2. Если видео нет, ищем картинки (до 12 часов)
     c_img_12 = [e for e in all_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
     if c_img_12: 
         print(f"Видео не найдено. Берем {len(c_img_12)} новостей с картинками (до 12ч).")
         return sorted(c_img_12, key=lambda e: e['age_hours'])[:5]
     
-    # 🖼️ 3. Если и тут пусто, ищем картинки (до 24ч)
     c_img_24 = [e for e in all_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['media_type'] == 'image']
     if c_img_24: 
         print(f"Берем {len(c_img_24)} новостей с картинками (до 24ч).")
@@ -292,7 +328,6 @@ def pick_most_important(candidates):
     if recent_titles:
         history_text = "УЖЕ ОПУБЛИКОВАНО РАНЕЕ:\n" + "\n".join(recent_titles) + "\n"
     
-    # 👇 СМЯГЧИЛИ ПРОМПТ: Теперь ИИ выбирает лучшее из того, что есть, а не ищет идеал
     prompt = f"""Ты — редактор жесткого новостного канала. Выбери ОДИН самый интересный, конкретный или трагичный заголовок из списка.
 КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выбирать новости про шоу-бизнес, актеров, фигуристов, спектакли, концерты, спорт или развлечения.
 ИГНОРИРУЙ обычные бытовые аварии (например, столкновение автобуса и грузовика с пострадавшими).
