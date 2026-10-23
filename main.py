@@ -59,8 +59,6 @@ BLACKLIST_WORDS = [
     "в этот день", "народные приметы", "церковный календарь", "лунный календарь", "именины"
 ]
 
-STOP_WORDS = {"в", "на", "и", "с", "по", "за", "о", "от", "до", "из", "у", "к", "не", "что", "как", "это", "все", "она", "так", "его", "но", "да", "ты", "же", "вы", "бы", "только", "ее", "мне", "было", "вот", "меня", "еще", "нет", "ему", "теперь", "когда", "даже", "ну", "вдруг", "ли", "если", "уже", "или", "ни", "быть", "был", "него", "вас", "нибудь", "опять", "уж", "вам", "ведь", "там", "потом", "себя", "ничего", "ей", "может", "они", "тут", "где", "есть", "надо", "ней", "для", "мы", "тебя", "их", "чем", "была", "сам", "чтоб", "без", "будто", "чего", "раз", "тоже", "себе", "под", "будет", "ж", "тогда", "кто", "этот", "того", "потому", "этого", "какой", "совсем", "ним", "здесь", "этом", "один", "почти", "мой", "тем", "чтобы", "нее", "сейчас", "были", "куда", "зачем", "сказать", "всех", "никогда", "сегодня", "можно", "при", "наконец", "два", "об", "другой", "хоть", "после", "над", "больше", "тот", "через", "эти", "нас", "про", "всего", "них", "какая", "много", "разве", "три", "эту", "моя", "впрочем", "хорошо", "свою", "этой", "перед", "иногда", "лучше", "чуть", "том", "нельзя", "такой", "им", "более", "всегда", "конечно", "всю", "между"}
-
 def get_posted_links():
     if os.path.exists("posted_news.txt"):
         with open("posted_news.txt", "r", encoding="utf-8") as f:
@@ -77,9 +75,16 @@ def get_posted_images():
             return f.read().splitlines()
     return []
 
+def clean_image_url(url):
+    # Убираем хвосты вроде ?timestamp, чтобы найти одинаковые картинки
+    if not url: return ""
+    return url.split('?')[0].strip()
+
 def save_posted_image(url):
+    clean_url = clean_image_url(url)
+    if not clean_url: return
     with open("posted_images.txt", "a", encoding="utf-8") as f:
-        f.write(url + "\n")
+        f.write(clean_url + "\n")
 
 def get_recent_titles():
     if os.path.exists("published_titles.txt"):
@@ -94,24 +99,6 @@ def save_published_title(title):
     if len(titles) > 15:
         with open("published_titles.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(titles[-15:]) + "\n")
-
-def is_duplicate_title(new_title):
-    recent_titles = get_recent_titles()
-    if not recent_titles: return False
-    
-    # 👇 УДАЛЯЕМ ЦИФРЫ ИЗ ЗАГОЛОВКА ПЕРЕД СРАВНЕНИЕМ
-    clean_new_title = re.sub(r'\d+', '', new_title.lower())
-    new_words = set(re.findall(r'[а-яёa-z]+', clean_new_title)) - STOP_WORDS
-    
-    for old_title in recent_titles:
-        clean_old_title = re.sub(r'\d+', '', old_title.lower())
-        old_words = set(re.findall(r'[а-яёa-z]+', clean_old_title)) - STOP_WORDS
-        
-        # Если совпало 2 или больше значимых слов (например, "снежных", "барсов"), это дубль
-        if len(new_words.intersection(old_words)) >= 2:
-            print(f"Отсеяно как смысловой дубль (похоже на: '{old_title}')")
-            return True
-    return False
 
 def get_last_theme():
     if os.path.exists("last_theme.txt"):
@@ -183,7 +170,8 @@ def is_blacklisted(text):
 
 def get_news_candidates(theme):
     posted_links = get_posted_links()
-    posted_images = get_posted_images()
+    # Получаем историю картинок, предварительно очистив их
+    posted_images = [clean_image_url(img) for img in get_posted_images()]
     now = datetime.now(timezone.utc)
     
     all_entries = []
@@ -199,8 +187,6 @@ def get_news_candidates(theme):
                 if link in posted_links: continue
                 
                 title = entry.get("title", "")
-                
-                if is_duplicate_title(title): continue
                 
                 if hasattr(entry, 'published_parsed') and entry.published_parsed:
                     pub_time = time.mktime(entry.published_parsed)
@@ -218,10 +204,12 @@ def get_news_candidates(theme):
                 
                 media_type, media_url = get_media_from_entry(entry, feed_url)
                 
-                if media_type == 'image' and media_url in posted_images:
-                    print(f"Отсеяна картинка-заглушка: {media_url}")
-                    media_type = None
-                    media_url = None
+                # Проверка на использованную картинку (с очисткой URL)
+                if media_type == 'image' and media_url:
+                    if clean_image_url(media_url) in posted_images:
+                        print(f"Отсеяна картинка-заглушка: {clean_image_url(media_url)}")
+                        media_type = None
+                        media_url = None
                 
                 full_text = f"{title} {summary}"
                 
@@ -280,12 +268,30 @@ def pick_most_important(candidates):
     if not candidates: return None
     titles_list = "\n".join([f"{i}. {c['title']}" for i, c in enumerate(candidates)])
     
-    prompt = f"""Ты главный редактор. Выбери ОДИН самый важный заголовок. 
-Игнорируй спорт и мелкие бытовые новости. Ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}).
-Список:
+    # 👇 ПЕРЕДАЕМ ИСТОРИЮ В ИИ
+    recent_titles = get_recent_titles()
+    history_text = ""
+    if recent_titles:
+        history_text = "УЖЕ ОПУБЛИКОВАНО РАНЕЕ (НЕ ВЫБИРАЙ ЭТИ ТЕМЫ ПОВТОРНО):\n" + "\n".join(recent_titles) + "\n"
+    
+    prompt = f"""Ты главный редактор новостного канала.
+Выбери ОДИН самый важный заголовок из списка кандидатов. 
+Игнорируй спорт, пиво, шоу-бизнес и мелкие бытовые новости.
+
+{history_text}
+
+Если ВСЕ новости в списке кандидатов описывают те же события, что уже были опубликованы выше, ответь словом NONE.
+В противном случае ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}).
+
+Список новых кандидатов:
 {titles_list}"""
     
     answer = call_groq(prompt)
+    
+    if "NONE" in answer.upper():
+        print("ИИ определил, что все новости - дубли. Пропускаем.")
+        return None
+        
     if answer:
         match = re.search(r'\d+', answer)
         if match:
@@ -479,7 +485,9 @@ def main():
                     
                     print(f"\n🎉 Готово! Следующая тема: {theme}")
                     return
-        
+            else:
+                 print("ИИ отклонил всех кандидатов как дубли. Ищем в следующей теме.")
+
     print("\n❌ Не удалось найти подходящих новостей.")
     sys.exit(0)
 
