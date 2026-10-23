@@ -7,7 +7,6 @@ on:
   push:
     branches: [ main ]
 
-# Эта строчка дает боту право сохранять файлы с памятью
 permissions:
   contents: write
 
@@ -33,9 +32,11 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          # 👇 ВОТ ЭТИ ДВЕ СТРОКИ МЫ ДОБАВИЛИ
+          VK_TOKEN: ${{ secrets.VK_TOKEN }}
+          VK_GROUP_ID: ${{ secrets.VK_GROUP_ID }}
         run: python main.py
 
-      # А вот тут тот самый блок, который сохраняет память бота
       - name: Commit and push state files
         run: |
           git config user.name "github-actions[bot]"
