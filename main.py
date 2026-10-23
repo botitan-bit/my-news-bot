@@ -35,7 +35,9 @@ RSS_FEEDS = [
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=fsb_official&format=Atom",
 ]
 
-SIGNATURE = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
+# 👇 ПОДПИСИ ДЛЯ РАЗНЫХ ПЛАТФОРМ
+SIGNATURE_TG = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
+SIGNATURE_MAX = '**[ПЕРВЫЕ НОВОСТИ](https://t.me/+l7bgzfXgngBkN2My)**'
 
 THEMES = {
     "СВО и Армия": ["сво", "дрон", "бпла", "ракета", "фронт", "минобороны", "всу", "штурм", "обстрел", "пво", "сводка", "наступление", "потери", "мобилизация", "армия", "военный", "беспилотник"],
@@ -56,14 +58,13 @@ RUSSIA_KEYWORDS = [
     "фронт", "шойгу", "белоусов", "губернатор", "сочи", "камчатк", "чукотк", "перм", "геленджик", "иванов", "нижний новгород", "певек"
 ]
 
-# 👇 СЕРЬЕЗНО РАСШИРЕННЫЙ ЧЕРНЫЙ СПИСОК (Убираем сухие сводки и спорт)
 BLACKLIST_WORDS = [
     "какой сегодня", "какой праздник", "гороскоп", "день рождения", "история дня", 
     "в этот день", "народные приметы", "церковный календарь", "лунный календарь", "именины",
     "заседание", "законопроект", "бюджет", "форум", "выставка", "конференция", "экономика", "инфляция", "курс валют",
     "спорт", "гонщик", "гонка", "автоспорт", "футбол", "хоккей", "олимпиад", "чемпионат", "турнир", "матч", "клуб", "тренер",
     "шоу-бизнес", "актер", "актриса", "певец", "певица", "звезда", "сериал", "фильм", "премьера", "инстаграм", "тикток",
-    "операция", "рейд", "подозреваемых", "задержано", "статистика", "итоги", "совещание", "круглый стол", "сводка мвд" # Убираем милицейскую скуку
+    "операция", "рейд", "подозреваемых", "задержано", "статистика", "итоги", "совещание", "круглый стол", "сводка мвд"
 ]
 
 def get_posted_links():
@@ -209,14 +210,13 @@ def get_news_candidates(theme):
                 
                 media_type, media_url = get_media_from_entry(entry, feed_url)
                 
-                # 👇 СТРОГИЙ ФИЛЬТР: Берем только новости с медиа!
                 if not media_type:
                     continue
 
                 if media_type == 'image' and media_url:
                     if clean_image_url(media_url) in posted_images:
                         print(f"Отсеяна картинка-заглушка: {clean_image_url(media_url)}")
-                        continue # Пропускаем новость, если картинка уже была
+                        continue
                 
                 full_text = f"{title} {summary}"
                 
@@ -229,14 +229,13 @@ def get_news_candidates(theme):
                     "link": link,
                     "theme_match": is_theme_match(full_text, theme),
                     "russia_match": is_russia_related(full_text),
-                    "has_media": True # Всегда True, так как мы отсеяли пустые
+                    "has_media": True
                 })
         except Exception as e:
             print(f"Ошибка чтения {feed_url}: {e}")
     
     print(f"Собрано всего новостей (с картинками и прошедших фильтр): {len(all_entries)}")
     
-    # Убираем уровни без медиа, оставляем только жесткий поиск
     c = [e for e in all_entries if e['age_hours'] <= 6 and e['russia_match'] and e['theme_match']]
     if c: return sorted(c, key=lambda e: e['age_hours'])[:5]
     
@@ -278,7 +277,6 @@ def pick_most_important(candidates):
     if recent_titles:
         history_text = "УЖЕ ОПУБЛИКОВАНО РАНЕЕ (НЕ ВЫБИРАЙ ЭТИ ТЕМЫ ПОВТОРНО):\n" + "\n".join(recent_titles) + "\n"
     
-    # 👇 ЖЕСТКИЙ ПРОМПТ (Отсекаем сухие сводки)
     prompt = f"""Ты — редактор жесткого новостного канала. Твоя цель — собрать максимум просмотров.
 Выбери ОДИН самый важный, резонансный или трагичный заголовок из списка.
 
@@ -322,7 +320,6 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
-    # 👇 УМНЫЙ ПРОМПТ ДЛЯ НАПИСАНИЯ
     prompt = f"""Ты — профессиональный, но дерзкий редактор. Перепиши новость так, чтобы её хотелось прочитать.
 Запрещено упоминать источники и писать служебные слова.
 Если в исходном тексте НЕТ КОНКРЕТИКИ (непонятно кого убили, где взорвалось, что случилось), напиши слово NONE.
@@ -349,7 +346,6 @@ def rewrite_with_ai(title, summary, theme):
     raw_text = raw_text.replace('\\n', '\n')
     raw_text = raw_text[:900]
     
-    # Дополнительная проверка: если после очистки текст слишком короткий
     plain_body = re.sub(r'<[^>]+>', '', raw_text).strip()
     if len(plain_body) < 40:
          print("⚠️ Текст после генерации слишком короткий. Отклоняем.")
@@ -383,13 +379,13 @@ def send_video(video_url, caption):
     return False
 
 def send_to_telegram(text, media_type, media_url):
-    full_text = f"{text}\n\n{SIGNATURE}"
+    # 👇 ИСПОЛЬЗУЕМ SIGNATURE_TG
+    full_text = f"{text}\n\n{SIGNATURE_TG}"
     if media_type == 'video' and media_url:
         if send_video(media_url, full_text): return True
     elif media_type == 'image' and media_url:
         if send_photo(media_url, full_text): return True
         
-    # Если картинка есть, но не загрузилась - используем текст
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHANNEL_ID, "text": full_text, "parse_mode": "HTML", "disable_web_page_preview": True}
     try:
@@ -430,8 +426,12 @@ def send_to_max(text, media_type, media_url):
     if not MAX_BOT_TOKEN or not MAX_CHANNEL_ID: return False
         
     print("Отправляем пост в MAX...")
+    # Конвертируем HTML в Markdown для MAX
     clean_text = text.replace('<b>', '**').replace('</b>', '**')
     clean_text = html.unescape(clean_text).strip()
+    
+    # 👇 ДОБАВЛЯЕМ ПОДПИСЬ ДЛЯ MAX С ОТСТУПОМ
+    clean_text = f"{clean_text}\n\n{SIGNATURE_MAX}"
     
     url = f"https://platform-api2.max.ru/messages?chat_id={MAX_CHANNEL_ID}"
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
