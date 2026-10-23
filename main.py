@@ -250,25 +250,25 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
-    prompt = f"""Ты — корректор новостного канала. Внеси МИНИМАЛЬНЫЕ правки в исходный текст.
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО упоминать источники (например, "Лента.ру", "РИА Новости", "ТАСС", "подробнее на сайте").
-Удали все ссылки на сторонние сайты и призывы перейти по ссылке.
+    # 👇 ИСПРАВЛЕННЫЙ ПРОМПТ: Запрещаем писать категории и требуем правильный формат
+    prompt = f"""Ты — профессиональный редактор. Перепиши новость кратко и по делу.
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО упоминать источники (сайты) и писать служебные слова (например, "Рубрика:", "Категория:").
 
 Требования:
-1. Заголовок оберни в <b>...</b>.
+1. Твой ответ должен начинаться СРАЗУ с заголовка, обернутого в тег <b>...</b>.
 2. После </b> сделай ДВА переноса строки.
-3. Исправь ошибки и пунктуацию.
-4. Добавь 1-2 уместных эмодзи в начало текста.
-Рубрика: {theme}
-Заголовок: {title}
-Текст: {summary}
+3. Затем напиши 1-2 уместных эмодзи и краткий текст новости (суть, факты).
+4. Никаких вступлений и комментариев.
+
+Исходный заголовок: {title}
+Исходный текст: {summary}
 """
     raw_text = call_openrouter(prompt)
     if not raw_text: 
         raw_text = f"<b>{title}</b>\n\n{summary}"
         
-    raw_text = re.sub(r'\(Note:.*?\)', '', raw_text, flags=re.IGNORECASE)
-    raw_text = re.sub(r'Since the original text.*?\n', '', raw_text, flags=re.IGNORECASE)
+    # Удаляем случайно оставленные нейросетью "Category:" или "Рубрика:"
+    raw_text = re.sub(r'^(Category|Рубрика|Категория):.*?\n', '', raw_text, flags=re.IGNORECASE)
     
     clean_patterns = [
         r'—\s*в материале[^.]*\.', r'—\s*подробнее[^.]*\.', 
@@ -279,10 +279,7 @@ def rewrite_with_ai(title, summary, theme):
         raw_text = re.sub(pattern, '', raw_text, flags=re.IGNORECASE)
 
     raw_text = re.sub(r'</b>\s*', '</b>\n\n', raw_text)
-    
-    # 👇 ИСПРАВЛЕНИЕ ЛИТЕРАЛЬНЫХ \n
     raw_text = raw_text.replace('\\n', '\n')
-    
     raw_text = raw_text[:900]
     
     plain_body = re.sub(r'<[^>]+>', '', raw_text).strip()
@@ -350,6 +347,9 @@ def send_to_vk(text, media_type, media_url):
         
     print("Отправляем пост во ВКонтакте...")
     
+    if not VK_TOKEN.startswith("vk1.a"):
+        print("ВК: Токен не начинается с 'vk1.a'. Возможно, вы вставили токен группы, а не пользовательский. Фото не загрузится.")
+
     clean_text = re.sub(r'<[^>]+>', '', text)
     clean_text = clean_text.replace('&quot;', '"').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').strip()
     
@@ -366,23 +366,15 @@ def send_to_vk(text, media_type, media_url):
                 attachments = f"photo{photo['owner_id']}_{photo['id']}"
                 time.sleep(2)
             except Exception as e:
-                print(f"ВК: Не удалось загрузить фото ({e}). Постим только текст.")
+                print(f"ВК: Ошибка загрузки фото -> {e}")
         
         vk.wall.post(owner_id=f"-{VK_GROUP_ID}", message=clean_text, attachments=attachments, from_group=1)
         print("✅ ВК: Успешно опубликовано!")
         return True
     except Exception as e:
-        error_msg = str(e)
-        if "Flood control" in error_msg:
-            print("⚠️ ВК: Flood control. Ждем 10 секунд...")
-            time.sleep(10)
-            try:
-                vk.wall.post(owner_id=f"-{VK_GROUP_ID}", message=clean_text, attachments=attachments, from_group=1)
-                print("✅ ВК: Успешно опубликовано после ожидания!")
-                return True
-            except Exception as retry_e:
-                print(f"❌ ВК: Повторная ошибка: {retry_e}")
         print(f"❌ ВК Ошибка: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print("Ответ сервера ВК:", e.response.text)
         return False
 
 def send_to_max(text, media_type, media_url):
@@ -451,21 +443,17 @@ def main():
 
                 print(f"Сгенерированный текст:\n{post_body}\n")
                 
-                # 1. Публикуем в Telegram
                 tg_success = send_to_telegram(post_body, best_news['media_type'], best_news['media_url'])
                 print(f"Telegram: {'OK' if tg_success else 'FAIL'}")
                 
                 if tg_success:
-                    # 2. СРАЗУ сохраняем в память, чтобы не было дублей, даже если ВК/MAX упадут
                     save_last_theme(theme)
                     save_posted_link(best_news['link'])
-                    print("Состояние сохранено. Теперь пытаемся отправить в ВК и MAX...")
+                    print("Состояние сохранено (защита от дублей).")
                     
-                    # 3. Пытаемся отправить в ВК
                     vk_result = send_to_vk(post_body, best_news['media_type'], best_news['media_url'])
                     print(f"ВКонтакте: {'OK' if vk_result else 'FAIL'}")
                     
-                    # 4. Пытаемся отправить в MAX
                     max_result = send_to_max(post_body, best_news['media_type'], best_news['media_url'])
                     print(f"MAX: {'OK' if max_result else 'FAIL'}")
                     
