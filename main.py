@@ -39,6 +39,16 @@ THEME_ORDER = ["Политика", "СВО", "Мигранты", "Происше
 PRIMARY_MODEL = "qwen/qwen3.6-plus-preview:free"
 FALLBACK_MODEL = "openrouter/free"
 
+# 👇 СПИСОК КЛЮЧЕВЫХ СЛОВ ДЛЯ ГЕОГРАФИЧЕСКОГО ФИЛЬТРА (ТОЛЬКО РФ)
+RUSSIA_KEYWORDS = [
+    "росси", "рф", "путин", "кремл", "москв", "петербург", "ленинград", "курск", "белгород", 
+    "донбасс", "донецк", "луганск", "крым", "севастопол", "херсон", "запорож", "госдум", 
+    "совфед", "мид", "минобороны", "росгвард", "фсб", "мвд", "мчс", "чечн", "татарстан", 
+    "башкир", "сибир", "урал", "кавказ", "ростов", "краснодар", "самара", "екатеринбург", 
+    "новосибирск", "омск", "томск", "иркутск", "якут", "владивосток", "хабаровск", 
+    "сво", "всу", "дрон", "бпла", "фронт", "шойгу", "белоусов", "губернатор"
+]
+
 def get_posted_links():
     if os.path.exists("posted_news.txt"):
         with open("posted_news.txt", "r", encoding="utf-8") as f:
@@ -109,6 +119,11 @@ def is_old_news(title, summary):
             return True
     return False
 
+# 👇 НОВАЯ ФУНКЦИЯ: Проверка, что новость про Россию
+def is_russia_related(text):
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in RUSSIA_KEYWORDS)
+
 def get_news_candidates(theme):
     posted_links = get_posted_links()
     now = datetime.now(timezone.utc)
@@ -130,11 +145,15 @@ def get_news_candidates(theme):
 
                 title = entry.get("title", "")
                 summary = entry.get("summary", entry.get("description", ""))
+                full_text = f"{title} {summary}"
                 
                 if is_old_news(title, summary): continue
 
-                full_text = f"{title} {summary}"
-                
+                # 👇 ПРИМЕНЯЕМ ГЕОГРАФИЧЕСКИЙ ФИЛЬТР
+                if not is_russia_related(full_text):
+                    print(f"Отсеяна зарубежная новость: {title}")
+                    continue
+
                 if is_theme_match(full_text, theme):
                     media_type, media_url = get_media_from_entry(entry, feed_url)
                     if media_type:
@@ -188,7 +207,6 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
-    # 👇 НОВЫЙ ПРОМПТ: Теперь ИИ работает как корректор, а не писатель
     prompt = f"""Ты — корректор новостного канала. Твоя задача — внести МИНИМАЛЬНЫЕ правки в исходный текст.
 Не переписывай новость заново, не сокращай её до потери смысла и не добавляй факты, которых нет в оригинале.
 
@@ -208,7 +226,7 @@ def rewrite_with_ai(title, summary, theme):
         raw_text = f"<b>{title}</b>\n\n{summary}"
         
     raw_text = re.sub(r'</b>\s*', '</b>\n\n', raw_text)
-    raw_text = raw_text[:900] # Увеличили лимит, так как текст теперь не сокращается ИИ
+    raw_text = raw_text[:900]
     return f"{sanitize_html(raw_text)}\n\n{SIGNATURE}"
 
 def send_photo(photo_url, caption):
@@ -313,7 +331,7 @@ def main():
                     print(f"Успех! Следующая тема: {theme}")
                     return
         
-    print("Не удалось найти свежие новости. Пропускаем запуск.")
+    print("Не удалось найти свежие новости по РФ. Пропускаем запуск.")
     sys.exit(0)
 
 if __name__ == "__main__":
