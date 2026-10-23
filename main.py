@@ -80,9 +80,27 @@ BLACKLIST_WORDS = [
 ]
 
 def ensure_state_files_exist():
-    for file in ["last_theme.txt", "posted_news.txt", "published_titles.txt", "posted_images.txt", "posted_videos.txt"]:
+    for file in ["last_theme.txt", "posted_news.txt", "published_titles.txt", "posted_images.txt", "posted_videos.txt", "posted_hashes.txt"]:
         if not os.path.exists(file):
             open(file, 'a').close()
+
+def get_text_hash(text):
+    """Создает уникальный отпечаток текста для защиты от дублей."""
+    clean_text = re.sub(r'[^\w\s]', '', text.lower()) # Убираем пунктуацию
+    words = clean_text.split()
+    # Берем первые 10 слов (обычно этого достаточно для идентификации новости)
+    return " ".join(words[:10]) 
+
+def get_posted_hashes():
+    if os.path.exists("posted_hashes.txt"):
+        with open("posted_hashes.txt", "r", encoding="utf-8") as f:
+            return f.read().splitlines()
+    return []
+
+def save_posted_hash(text_hash):
+    if not text_hash: return
+    with open("posted_hashes.txt", "a", encoding="utf-8") as f:
+        f.write(text_hash + "\n")
 
 def get_posted_links():
     if os.path.exists("posted_news.txt"):
@@ -172,6 +190,7 @@ def is_blacklisted(text):
 def get_tg_web_videos(channel_name, theme, now):
     videos = []
     posted_videos = get_posted_videos()
+    posted_hashes = get_posted_hashes()
     
     url = f"https://t.me/s/{channel_name}"
     try:
@@ -221,7 +240,12 @@ def get_tg_web_videos(channel_name, theme, now):
             clean_text = text_tag.get_text("\n", strip=True)
             if len(clean_text) < 20:
                 continue
-            
+                
+            # 👇 ПРОВЕРКА НА СМЫСЛОВОЙ ДУБЛЬ
+            text_hash = get_text_hash(clean_text)
+            if text_hash in posted_hashes:
+                continue
+                
             post_id = post.get("data-post", "")
             post_link = f"https://t.me/{post_id}"
             
@@ -236,6 +260,7 @@ def get_tg_web_videos(channel_name, theme, now):
                 "media_type": "video",
                 "media_url": video_url,
                 "link": post_link,
+                "text_hash": text_hash,
                 "theme_match": True,
                 "russia_match": True,
                 "has_media": True
@@ -245,7 +270,7 @@ def get_tg_web_videos(channel_name, theme, now):
         pass
     return videos
 
-def process_feeds(feed_list, theme, posted_links, posted_images, now):
+def process_feeds(feed_list, theme, posted_links, posted_images, posted_hashes, now):
     entries = []
     for feed_url in feed_list:
         try:
@@ -273,6 +298,12 @@ def process_feeds(feed_list, theme, posted_links, posted_images, now):
                 if is_old_news(title, summary): continue
                 if len(summary_clean) < 20: continue
                 if is_blacklisted(f"{title} {summary_clean}"): continue
+                
+                # 👇 ПРОВЕРКА НА СМЫСЛОВОЙ ДУБЛЬ
+                full_raw_text = f"{title} {summary_clean}"
+                text_hash = get_text_hash(full_raw_text)
+                if text_hash in posted_hashes:
+                    continue
                 
                 media_type = None
                 media_url = None
@@ -322,6 +353,7 @@ def process_feeds(feed_list, theme, posted_links, posted_images, now):
                     "media_type": media_type,
                     "media_url": media_url,
                     "link": link,
+                    "text_hash": text_hash,
                     "theme_match": is_theme_match(full_text, theme),
                     "russia_match": is_russia_related(full_text),
                     "has_media": True
@@ -333,6 +365,7 @@ def process_feeds(feed_list, theme, posted_links, posted_images, now):
 def get_news_candidates(theme):
     posted_links = get_posted_links()
     posted_images = [clean_image_url(img) for img in get_posted_images()]
+    posted_hashes = get_posted_hashes()
     now = datetime.now(timezone.utc)
     
     print(f"  -> Ищем видео в веб-версиях Telegram-каналов...")
@@ -349,8 +382,8 @@ def get_news_candidates(theme):
         return tg_videos[:5]
 
     print("  -> Видео в веб-версиях не найдено. Проверяем RSS...")
-    priority_entries = process_feeds(PRIORITY_FEEDS, theme, posted_links, posted_images, now)
-    general_entries = process_feeds(RSS_FEEDS, theme, posted_links, posted_images, now)
+    priority_entries = process_feeds(PRIORITY_FEEDS, theme, posted_links, posted_images, posted_hashes, now)
+    general_entries = process_feeds(RSS_FEEDS, theme, posted_links, posted_images, posted_hashes, now)
     
     all_entries = priority_entries + general_entries
     print(f"Собрано всего новостей (с медиа): {len(all_entries)}")
@@ -575,7 +608,7 @@ def send_to_max(text, media_type, media_url):
         return False
 
 def main():
-    ensure_state_files_exist() # 👈 ГАРАНТИРУЕМ, ЧТО ФАЙЛЫ СУЩЕСТВУЮТ
+    ensure_state_files_exist()
     
     last_theme = get_last_theme()
     try:
@@ -612,6 +645,7 @@ def main():
                     save_last_theme(theme)
                     save_posted_link(best_news['link'])
                     save_published_title(best_news['title'])
+                    save_posted_hash(best_news['text_hash']) # 👈 СОХРАНЯЕМ ОТПЕЧАТОК
                     
                     if best_news.get('media_url'):
                         if best_news['media_type'] == 'video':
