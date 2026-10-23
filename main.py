@@ -76,36 +76,8 @@ BLACKLIST_WORDS = [
     "шоу-бизнес", "актер", "актриса", "певец", "певица", "звезда", "сериал", "фильм", "премьера", "инстаграм", "тикток",
     "спектакль", "ледовый", "фигурист", "авербух", "петросян", "концерт", "развлечение", "шоу", "праздник", "фестиваль", "выступление",
     "продолжают спецоперацию", "выполняют задачи", "боевая готовность", "полная готовность", "активные действия", "выполняют боевые задачи", "решают задачи", "контроль над ситуацией",
-    "автобус", "маршрутка"
+    "автобус", "маршрутка", "прямой эфир", "прямая трансляция", "смотрите эфир", "ожидается эфир" # 👈 ЗАПРЕТ ЭФИРОВ
 ]
-
-# --- ФУНКЦИИ ПРОВЕРКИ ТЕКСТА (ТЕ САМЫЕ, КОТОРЫЕ ПОТЕРЯЛИСЬ) ---
-
-def is_theme_match(text, theme):
-    text_lower = text.lower()
-    for keyword in THEMES[theme]:
-        if re.search(r'(?:^|[^а-яё])' + re.escape(keyword), text_lower):
-            return True
-    return False
-
-def is_old_news(title, summary):
-    current_year = datetime.now().year
-    text = f"{title} {summary}".lower()
-    years = re.findall(r'\b(20\d{2})\b', text)
-    for year in years:
-        if int(year) < current_year:
-            return True
-    return False
-
-def is_russia_related(text):
-    text_lower = text.lower()
-    return any(kw in text_lower for kw in RUSSIA_KEYWORDS)
-
-def is_blacklisted(text):
-    text_lower = text.lower()
-    return any(word in text_lower for word in BLACKLIST_WORDS)
-
-# -----------------------------------------------------------
 
 def get_posted_links():
     if os.path.exists("posted_news.txt"):
@@ -157,6 +129,30 @@ def save_last_theme(theme):
     with open("last_theme.txt", "w", encoding="utf-8") as f:
         f.write(theme)
 
+def is_theme_match(text, theme):
+    text_lower = text.lower()
+    for keyword in THEMES[theme]:
+        if re.search(r'(?:^|[^а-яё])' + re.escape(keyword), text_lower):
+            return True
+    return False
+
+def is_old_news(title, summary):
+    current_year = datetime.now().year
+    text = f"{title} {summary}".lower()
+    years = re.findall(r'\b(20\d{2})\b', text)
+    for year in years:
+        if int(year) < current_year:
+            return True
+    return False
+
+def is_russia_related(text):
+    text_lower = text.lower()
+    return any(kw in text_lower for kw in RUSSIA_KEYWORDS)
+
+def is_blacklisted(text):
+    text_lower = text.lower()
+    return any(word in text_lower for word in BLACKLIST_WORDS)
+
 def get_tg_web_videos(channel_name, theme, now):
     videos = []
     url = f"https://t.me/s/{channel_name}"
@@ -170,8 +166,13 @@ def get_tg_web_videos(channel_name, theme, now):
         posts = soup.select(".tgme_widget_message[data-post]")
         
         for post in reversed(posts):
-            video_tag = post.select_one(".tgme_widget_message_video_player video[src]")
+            # Ищем видео (тег video или ссылку на .mp4 в data-атрибутах)
+            video_tag = post.select_one("video[src]")
             if not video_tag:
+                # Иногда Telegram прячет видео в ссылке-обложке
+                video_link = post.select_one("a.tgme_widget_message_video_player")
+                if video_link and video_link.get("href"):
+                    pass # Нам нужен именно src видео
                 continue
                 
             video_url = video_tag.get("src")
@@ -192,12 +193,9 @@ def get_tg_web_videos(channel_name, theme, now):
             post_id = post.get("data-post", "")
             post_link = f"https://t.me/{post_id}"
             
-            if is_blacklisted(clean_text):
-                continue
-            if not is_russia_related(clean_text):
-                continue
-            if not is_theme_match(clean_text, theme):
-                continue
+            if is_blacklisted(clean_text): continue
+            if not is_russia_related(clean_text): continue
+            if not is_theme_match(clean_text, theme): continue
                 
             videos.append({
                 "title": clean_text[:60] + "...",
@@ -264,13 +262,18 @@ def process_feeds(feed_list, theme, posted_links, posted_images, now):
                             html_to_search += content_block.get('value', '')
                     html_to_search += entry.get('summary', entry.get('description', ''))
                     
+                    # 👇 Ищем mp4 в тексте или тег <video src="...">
                     vid_match = re.search(r'(https?://[^\s"<>]+\.mp4)', html_to_search)
                     if vid_match:
                         media_type, media_url = 'video', vid_match.group(1)
                     else:
-                        img_match = re.search(r'<img[^>]+src="([^">]+)"', html_to_search)
-                        if img_match:
-                            media_type, media_url = 'image', urljoin(feed_url, img_match.group(1))
+                        vid_tag_match = re.search(r'<video[^>]+src="([^">]+)"', html_to_search)
+                        if vid_tag_match:
+                            media_type, media_url = 'video', urljoin(feed_url, vid_tag_match.group(1))
+                        else:
+                            img_match = re.search(r'<img[^>]+src="([^">]+)"', html_to_search)
+                            if img_match:
+                                media_type, media_url = 'image', urljoin(feed_url, img_match.group(1))
 
                 if not media_type:
                     continue
@@ -397,9 +400,10 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
+    # 👇 ДОБАВИЛИ ЖЕСТКИЙ ЗАПРЕТ НА ЭФИРЫ
     prompt = f"""Ты — профессиональный редактор. Перепиши новость так, чтобы она была понятной, цепляющей и ТОЛЬКО НА РУССКОМ ЯЗЫКЕ.
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ любые английские слова.
-Если в исходном тексте ТОЛЬКО общие фразы, напиши слово NONE.
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ любые английские слова и фразы вроде "ожидается прямой эфир" или "смотрите трансляцию".
+Мы публикуем только то, что уже произошло. Если в исходном тексте ТОЛЬКО общие фразы или обещания эфира, напиши слово NONE.
 
 Формат ответа:
 1. Заголовок в теге <b>...</b>. Сделай его громким и понятным.
@@ -412,7 +416,7 @@ def rewrite_with_ai(title, summary, theme):
     raw_text = call_groq(prompt)
     
     if not raw_text or "NONE" in raw_text.upper():
-        print("⚠️ ИИ отклонил новость.")
+        print("⚠️ ИИ отклонил новость (нет конкретики или обещание эфира).")
         return None
         
     raw_text = re.sub(r'^(Category|Рубрика|Категория):.*?\n', '', raw_text, flags=re.IGNORECASE)
