@@ -10,7 +10,6 @@ import vk_api
 from vk_api.upload import VkUpload
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
-from maxpyin import MaxBot
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
@@ -20,7 +19,7 @@ VK_GROUP_ID = os.environ.get("VK_GROUP_ID", "").strip()
 MAX_BOT_TOKEN = os.environ.get("MAX_BOT_TOKEN", "").strip()
 MAX_CHANNEL_ID = os.environ.get("MAX_CHANNEL_ID", "").strip()
 
-POST_PHOTO_TO_VK = False
+POST_PHOTO_TO_VK = True
 
 RSS_FEEDS = [
     "https://lenta.ru/rss/news",
@@ -31,7 +30,6 @@ RSS_FEEDS = [
     "https://rss-bridge.org/bridge01/?action=display&bridge=TelegramBridge&username=fsb_official&format=Atom",
 ]
 
-# Подпись ТОЛЬКО для Телеграма
 SIGNATURE = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
 
 THEMES = {
@@ -273,8 +271,9 @@ def rewrite_with_ai(title, summary, theme):
     raw_text = re.sub(r'Since the original text.*?\n', '', raw_text, flags=re.IGNORECASE)
     
     clean_patterns = [
-        r'в материале .*?[.»"]', r'подробнее .*?[.»"]', r'читайте .*?[.»"]', 
-        r'на сайте .*?[.»"]', r'сообщает .*?\.', r'источник:.*?\n'
+        r'—\s*в материале[^.]*\.', r'—\s*подробнее[^.]*\.', 
+        r'—\s*читайте[^.]*\.', r'—\s*на сайте[^.]*\.', 
+        r'сообщает[^.]*\.', r'источник:[^\n]*'
     ]
     for pattern in clean_patterns:
         raw_text = re.sub(pattern, '', raw_text, flags=re.IGNORECASE)
@@ -347,7 +346,6 @@ def send_to_vk(text, media_type, media_url):
         
     print("Отправляем пост во ВКонтакте...")
     
-    # Очищаем HTML-теги для ВК
     clean_text = re.sub(r'<[^>]+>', '', text)
     clean_text = clean_text.replace('&quot;', '"').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').strip()
     
@@ -362,6 +360,7 @@ def send_to_vk(text, media_type, media_url):
                 upload = VkUpload(vk_session)
                 photo = upload.photo_wall(io.BytesIO(img_data), group_id=int(VK_GROUP_ID))[0]
                 attachments = f"photo{photo['owner_id']}_{photo['id']}"
+                time.sleep(2)  # Пауза между загрузкой фото и постом, чтобы избежать Flood Control
             except Exception as e:
                 print(f"ВК: Не удалось загрузить фото ({e}). Постим только текст.")
         
@@ -369,6 +368,16 @@ def send_to_vk(text, media_type, media_url):
         print("✅ ВК: Успешно опубликовано!")
         return True
     except Exception as e:
+        error_msg = str(e)
+        if "Flood control" in error_msg:
+            print("⚠️ ВК: Flood control. Ждем 10 секунд и пробуем снова...")
+            time.sleep(10)
+            try:
+                vk.wall.post(owner_id=f"-{VK_GROUP_ID}", message=clean_text, attachments=attachments, from_group=1)
+                print("✅ ВК: Успешно опубликовано после ожидания!")
+                return True
+            except Exception as retry_e:
+                print(f"❌ ВК: Повторная ошибка: {retry_e}")
         print(f"❌ ВК Ошибка: {e}")
         if hasattr(e, 'response') and e.response is not None:
             print("Ответ сервера ВК:", e.response.text)
@@ -381,30 +390,39 @@ def send_to_max(text, media_type, media_url):
         
     print("Отправляем пост в MAX...")
     
-    # MAX понимает HTML, поэтому оставляем текст как есть
-    clean_text = text 
+    clean_text = text  # MAX понимает HTML
     
+    url = f"https://platform-api2.max.ru/messages?chat_id={MAX_CHANNEL_ID}"
+    headers = {
+        "Authorization": MAX_BOT_TOKEN,
+        "Content-Type": "application/json"
+    }
+    
+    # Формируем вложения, если есть изображение
+    attachments = []
+    if media_type == 'image' and media_url:
+        attachments.append({
+            "type": "image",
+            "payload": {
+                "url": media_url
+            }
+        })
+    
+    payload = {
+        "text": clean_text
+    }
+    if attachments:
+        payload["attachments"] = attachments
+
     try:
-        with MaxBot(MAX_BOT_TOKEN) as bot:
-            if media_type == 'image' and media_url:
-                try:
-                    img_data = requests.get(media_url, timeout=30).content
-                    temp_path = "temp_max_image.jpg"
-                    with open(temp_path, "wb") as f:
-                        f.write(img_data)
-                    
-                    bot.send_image(temp_path, chat_id=int(MAX_CHANNEL_ID), text=clean_text)
-                    os.remove(temp_path)
-                    print("✅ MAX: Успешно опубликовано (с фото)!")
-                    return True
-                except Exception as e:
-                    print(f"MAX: Не удалось загрузить фото ({e}). Постим только текст.")
-            
-            bot.send_message(clean_text, chat_id=int(MAX_CHANNEL_ID))
-            print("✅ MAX: Успешно опубликовано (текст)!")
-            return True
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        print("✅ MAX: Успешно опубликовано!")
+        return True
     except Exception as e:
         print(f"❌ MAX Ошибка: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print("Ответ сервера MAX:", e.response.text)
         return False
 
 def main():
