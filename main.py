@@ -17,8 +17,7 @@ TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
 VK_TOKEN = os.environ.get("VK_TOKEN", "").strip()
 VK_GROUP_ID = os.environ.get("VK_GROUP_ID", "").strip()
 
-# 👇 ТЕСТОВЫЙ РЕЖИМ ВК: False = постим только текст (без фото)
-POST_PHOTO_TO_VK = False 
+POST_PHOTO_TO_VK = True
 
 RSS_FEEDS = [
     "https://lenta.ru/rss/news",
@@ -49,7 +48,7 @@ RUSSIA_KEYWORDS = [
     "башкир", "сибир", "урал", "кавказ", "ростов", "краснодар", "самара", "екатеринбург", 
     "новосибирск", "омск", "томск", "иркутск", "якут", "владивосток", "хабаровск", 
     "сво", "всу", "дрон", "бпла", "фронт", "шойгу", "белоусов", "губернатор",
-    "сочи", "камчатк", "чукотк", "перм", "геленджик", "иванов", "нижний новгород", "певек", "аэропорт"
+    "сочи", "камчатк", "чукотк", "перм", "геленджик", "иванов", "нижний новгород", "певек"
 ]
 
 def get_posted_links():
@@ -126,53 +125,82 @@ def is_russia_related(text):
     text_lower = text.lower()
     return any(kw in text_lower for kw in RUSSIA_KEYWORDS)
 
+# 👇 УМНЫЙ ПОИСК С 5 УРОВНЯМИ ФИЛЬТРАЦИИ
 def get_news_candidates(theme):
     posted_links = get_posted_links()
     now = datetime.now(timezone.utc)
-    candidates = []
     
+    all_entries = []
     for feed_url in RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
-            for entry in feed.entries[:40]:
+            for entry in feed.entries[:60]:
                 link = entry.get("link", "")
                 if link in posted_links: continue
-
+                
                 if hasattr(entry, 'published_parsed') and entry.published_parsed:
                     pub_time = time.mktime(entry.published_parsed)
                     pub_date = datetime.fromtimestamp(pub_time, timezone.utc)
-                    if now - pub_date > timedelta(hours=6): continue
+                    age_hours = (now - pub_date).total_seconds() / 3600
                 else:
-                    continue
-
+                    age_hours = 8.0  # Если даты нет, считаем "средней свежести"
+                
                 title = entry.get("title", "")
                 summary = entry.get("summary", entry.get("description", ""))
-                
-                # 👇 НОВАЯ ПРОВЕРКА: Если текста нет или он слишком короткий — пропускаем
                 summary_clean = re.sub(r'<[^>]+>', '', summary).strip()
-                if len(summary_clean) < 15:
-                    continue
-
-                full_text = f"{title} {summary}"
                 
                 if is_old_news(title, summary): continue
-                if not is_russia_related(full_text): continue
-
-                if is_theme_match(full_text, theme):
-                    media_type, media_url = get_media_from_entry(entry, feed_url)
-                    if media_type:
-                        candidates.append({
-                            "title": title,
-                            "summary": summary_clean,
-                            "media_type": media_type,
-                            "media_url": media_url,
-                            "link": link
-                        })
-                        if len(candidates) >= 5:
-                            return candidates
+                
+                media_type, media_url = get_media_from_entry(entry, feed_url)
+                full_text = f"{title} {summary}"
+                
+                all_entries.append({
+                    "title": title,
+                    "summary": summary_clean,
+                    "age_hours": age_hours,
+                    "media_type": media_type,
+                    "media_url": media_url,
+                    "link": link,
+                    "theme_match": is_theme_match(full_text, theme),
+                    "russia_match": is_russia_related(full_text),
+                    "has_media": media_type is not None
+                })
         except Exception as e:
             print(f"Ошибка чтения {feed_url}: {e}")
-    return candidates
+    
+    print(f"Собрано всего новостей: {len(all_entries)}")
+    
+    # Уровень 1: 6ч + РФ + тема + медиа
+    c = [e for e in all_entries if e['age_hours'] <= 6 and e['russia_match'] and e['theme_match'] and e['has_media']]
+    if c: 
+        print(f"✅ Уровень 1 (6ч+РФ+медиа): {len(c)} кандидатов")
+        return sorted(c, key=lambda e: e['age_hours'])[:5]
+    
+    # Уровень 2: 12ч + РФ + тема + медиа
+    c = [e for e in all_entries if e['age_hours'] <= 12 and e['russia_match'] and e['theme_match'] and e['has_media']]
+    if c: 
+        print(f"✅ Уровень 2 (12ч+РФ+медиа): {len(c)} кандидатов")
+        return sorted(c, key=lambda e: e['age_hours'])[:5]
+    
+    # Уровень 3: 12ч + тема + медиа (без РФ-фильтра, пусть ИИ решает)
+    c = [e for e in all_entries if e['age_hours'] <= 12 and e['theme_match'] and e['has_media']]
+    if c: 
+        print(f"✅ Уровень 3 (12ч+медиа, РФ-фильтр отключен): {len(c)} кандидатов")
+        return sorted(c, key=lambda e: (not e['russia_match'], e['age_hours']))[:5]
+    
+    # Уровень 4: 24ч + РФ + тема + медиа
+    c = [e for e in all_entries if e['age_hours'] <= 24 and e['russia_match'] and e['theme_match'] and e['has_media']]
+    if c: 
+        print(f"✅ Уровень 4 (24ч+РФ+медиа): {len(c)} кандидатов")
+        return sorted(c, key=lambda e: e['age_hours'])[:5]
+    
+    # Уровень 5: 24ч + тема + медиа (без РФ-фильтра)
+    c = [e for e in all_entries if e['age_hours'] <= 24 and e['theme_match'] and e['has_media']]
+    if c: 
+        print(f"✅ Уровень 5 (24ч+медиа, любые): {len(c)} кандидатов")
+        return sorted(c, key=lambda e: (not e['russia_match'], e['age_hours']))[:5]
+    
+    return []
 
 def call_openrouter(prompt):
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -192,20 +220,37 @@ def call_openrouter(prompt):
             print(f"⚠️ Ошибка модели {model}: {e}")
     return ""
 
+# 👇 УМНЫЙ ВЫБОР С ЗАЩИТОЙ ОТ НЕ-РФ НОВОСТЕЙ
 def pick_most_important(candidates):
     if not candidates: return None
     titles_list = "\n".join([f"{i}. {c['title']}" for i, c in enumerate(candidates)])
-    prompt = f"""Ты главный редактор новостного канала.
-Выбери ОДИН самый важный заголовок из списка. 
-ОБЯЗАТЕЛЬНОЕ УСЛОВИЕ: Новость должна касаться России. Игнорируй мировые новости, если они не связаны с РФ.
-Ответь только цифрой от 0 до {len(candidates)-1}:\n{titles_list}"""
     
-    answer = call_openrouter(prompt)
+    prompt = f"""Ты главный редактор новостного канала про Россию.
+Задача: выбрать ОДИН самый важный заголовок, который касается РОССИИ (её регионов, граждан, политики).
+
+ПРАВИЛА:
+- Если есть хотя бы одна новость про РФ — выбери её и ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}).
+- Если ВСЕ новости в списке — про другие страны (США, Европа, Китай и т.п.) без связи с РФ — ответь словом NONE.
+
+Список заголовков:
+{titles_list}"""
+    
+    answer = call_openrouter(prompt).strip()
+    
+    if 'NONE' in answer.upper():
+        print("ИИ: Ни одна новость не связана с РФ. Пропускаем.")
+        return None
+    
     match = re.search(r'\d+', answer)
     if match:
         idx = int(match.group())
         if 0 <= idx < len(candidates): return candidates[idx]
-    return candidates[0]
+    
+    # Если ИИ не дал четкого ответа, берем первую РФ-новость из списка
+    for c in candidates:
+        if is_russia_related(f"{c['title']} {c['summary']}"):
+            return c
+    return None
 
 def sanitize_html(text):
     text = text.replace('<b>', '||BOLD_START||').replace('</b>', '||BOLD_END||')
@@ -214,28 +259,26 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
-    prompt = f"""Ты — корректор новостного канала. Твоя задача — внести МИНИМАЛЬНЫЕ правки в исходный текст.
-Не переписывай новость заново, не сокращай её до потери смысла и не добавляй факты, которых нет в оригинале.
+    prompt = f"""Ты — корректор новостного канала. Внеси МИНИМАЛЬНЫЕ правки в текст.
+Не переписывай заново, не сокращай, не добавляй факты.
 
-Требования к посту:
-1. Заголовок: Возьми исходный заголовок, убери из него кликбейт (если есть), и оберни в тег <b>...</b>.
-2. После закрывающего тега </b> сделай ДВА переноса строки (оставь пустую строку).
-3. Текст: Возьми исходный текст. Исправь только орфографические, грамматические ошибки и пунктуацию.
-4. Добавь 1-2 уместных эмодзи в начало текста.
-5. Не добавляй никаких своих комментариев. Дай только готовый пост.
+Требования:
+1. Заголовок оберни в <b>...</b>.
+2. После </b> сделай ДВА переноса строки.
+3. Исправь только ошибки и пунктуацию.
+4. Добавь 1-2 уместных эмодзи.
+5. Никаких своих комментариев.
 
 Рубрика: {theme}
-Исходный заголовок: {title}
-Исходный текст: {summary}
+Заголовок: {title}
+Текст: {summary}
 """
     raw_text = call_openrouter(prompt)
     if not raw_text: 
         raw_text = f"<b>{title}</b>\n\n{summary}"
         
-    # 👇 ОЧИСТКА ОТ МЕТА-ОТВЕТОВ ИИ (если он все же написал "Note:")
     raw_text = re.sub(r'\(Note:.*?\)', '', raw_text, flags=re.IGNORECASE)
     raw_text = re.sub(r'Since the original text.*?\n', '', raw_text, flags=re.IGNORECASE)
-    
     raw_text = re.sub(r'</b>\s*', '</b>\n\n', raw_text)
     raw_text = raw_text[:900]
     return f"{sanitize_html(raw_text)}\n\n{SIGNATURE}"
@@ -298,7 +341,6 @@ def send_to_vk(text, media_type, media_url):
         vk = vk_session.get_api()
         attachments = ""
         
-        # 👇 ТЕСТОВЫЙ РЕЖИМ: если POST_PHOTO_TO_VK = False, картинки не грузим
         if POST_PHOTO_TO_VK and media_type == 'image' and media_url:
             try:
                 img_data = requests.get(media_url, timeout=30).content
@@ -309,10 +351,10 @@ def send_to_vk(text, media_type, media_url):
                 print(f"ВК: Не удалось загрузить фото ({e}). Постим только текст.")
         
         vk.wall.post(owner_id=f"-{VK_GROUP_ID}", message=clean_text, attachments=attachments, from_group=1)
-        print("ВК: Успешно опубликовано!")
+        print("✅ ВК: Успешно опубликовано!")
         return True
     except Exception as e:
-        print(f"ВК Ошибка: {e}")
+        print(f"❌ ВК Ошибка: {e}")
         if hasattr(e, 'response') and e.response is not None:
             print("Ответ сервера ВК:", e.response.text)
         return False
@@ -329,28 +371,31 @@ def main():
         current_index = (next_index + i) % len(THEME_ORDER)
         theme = THEME_ORDER[current_index]
         
-        print(f"Ищем кандидатов по теме: {theme}")
+        print(f"\n=== Ищем новости по теме: {theme} ===")
         candidates = get_news_candidates(theme)
         
         if candidates:
-            print(f"Найдено {len(candidates)} кандидатов. Отправляем ИИ на оценку важности...")
+            print(f"Отправляем {len(candidates)} кандидатов на оценку ИИ...")
             best_news = pick_most_important(candidates)
             
             if best_news:
-                print(f"ИИ выбрал самую важную: {best_news['title']}")
+                print(f"✅ ИИ выбрал: {best_news['title']}")
                 post = rewrite_with_ai(best_news['title'], best_news['summary'], theme)
                 print(f"Сгенерированный текст:\n{post}\n")
                 
                 tg_success = send_to_telegram(post, best_news['media_type'], best_news['media_url'])
+                print(f"Telegram: {'OK' if tg_success else 'FAIL'}")
                 
                 if tg_success:
-                    send_to_vk(post, best_news['media_type'], best_news['media_url'])
+                    vk_result = send_to_vk(post, best_news['media_type'], best_news['media_url'])
+                    print(f"ВКонтакте: {'OK' if vk_result else 'FAIL'}")
+                    
                     save_last_theme(theme)
                     save_posted_link(best_news['link'])
-                    print(f"Успех! Следующая тема: {theme}")
+                    print(f"\n🎉 Готово! Следующая тема: {theme}")
                     return
         
-    print("Не удалось найти свежие новости по РФ. Пропускаем запуск.")
+    print("\n❌ Не удалось найти подходящих новостей ни на одном уровне фильтрации.")
     sys.exit(0)
 
 if __name__ == "__main__":
