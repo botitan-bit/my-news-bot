@@ -10,12 +10,15 @@ import vk_api
 from vk_api.upload import VkUpload
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
+from maxpyin import MaxBot
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
 VK_TOKEN = os.environ.get("VK_TOKEN", "").strip()
 VK_GROUP_ID = os.environ.get("VK_GROUP_ID", "").strip()
+MAX_BOT_TOKEN = os.environ.get("MAX_BOT_TOKEN", "").strip()
+MAX_CHANNEL_ID = os.environ.get("MAX_CHANNEL_ID", "").strip()
 
 POST_PHOTO_TO_VK = True
 
@@ -51,7 +54,6 @@ RUSSIA_KEYWORDS = [
     "фронт", "шойгу", "белоусов", "губернатор", "сочи", "камчатк", "чукотк", "перм", "геленджик", "иванов", "нижний новгород", "певек"
 ]
 
-# 👇 ЧЕРНЫЙ СПИСОК: мусорные новости и праздники
 BLACKLIST_WORDS = [
     "какой сегодня", "какой праздник", "гороскоп", "день рождения", "история дня", 
     "в этот день", "народные приметы", "церковный календарь", "лунный календарь", "именины"
@@ -161,9 +163,7 @@ def get_news_candidates(theme):
                 if is_old_news(title, summary): continue
                 if len(summary_clean) < 40: continue
                 
-                # 👇 ОТСЕКАЕМ ПРАЗДНИКИ И ГОРОСКОПЫ
                 if is_blacklisted(f"{title} {summary_clean}"):
-                    print(f"Отсеяна мусорная новость (праздник/гороскоп): {title}")
                     continue
                 
                 media_type, media_url = get_media_from_entry(entry, feed_url)
@@ -252,7 +252,6 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
-    # 👇 ЗАПРЕЩАЕМ ИИ УПОМИНАТЬ САЙТЫ И СТАВИМ ЖЕСТКИЕ ПРАВИЛА
     prompt = f"""Ты — корректор новостного канала. Внеси МИНИМАЛЬНЫЕ правки в исходный текст.
 КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО упоминать источники (например, "Лента.ру", "РИА Новости", "ТАСС", "подробнее на сайте").
 Удали все ссылки на сторонние сайты и призывы перейти по ссылке.
@@ -273,7 +272,6 @@ def rewrite_with_ai(title, summary, theme):
     raw_text = re.sub(r'\(Note:.*?\)', '', raw_text, flags=re.IGNORECASE)
     raw_text = re.sub(r'Since the original text.*?\n', '', raw_text, flags=re.IGNORECASE)
     
-    # 👇 УДАЛЯЕМ УПОМИНАНИЯ САЙТОВ, ЕСЛИ ИИ ИХ ПРОПУСТИЛ
     clean_patterns = [
         r'в материале .*?[.»"]', r'подробнее .*?[.»"]', r'читайте .*?[.»"]', 
         r'на сайте .*?[.»"]', r'сообщает .*?\.', r'источник:.*?\n'
@@ -290,7 +288,6 @@ def rewrite_with_ai(title, summary, theme):
     clean_body = clean_body.replace(clean_title, '').strip()
     
     if len(clean_body) < 30:
-        print(f"❌ Отклонено: текст новости содержит только заголовок и эмодзи (нет сути).")
         return None
         
     return sanitize_html(raw_text)
@@ -350,7 +347,7 @@ def send_to_vk(text, media_type, media_url):
         
     print("Отправляем пост во ВКонтакте...")
     
-    # Убираем ВСЕ HTML-теги для ВК
+    # Очищаем HTML-теги для ВК
     clean_text = re.sub(r'<[^>]+>', '', text)
     clean_text = clean_text.replace('&quot;', '"').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>').strip()
     
@@ -375,6 +372,39 @@ def send_to_vk(text, media_type, media_url):
         print(f"❌ ВК Ошибка: {e}")
         if hasattr(e, 'response') and e.response is not None:
             print("Ответ сервера ВК:", e.response.text)
+        return False
+
+def send_to_max(text, media_type, media_url):
+    if not MAX_BOT_TOKEN or not MAX_CHANNEL_ID:
+        print("MAX: Нет токена или ID канала.")
+        return False
+        
+    print("Отправляем пост в MAX...")
+    
+    # MAX понимает HTML, поэтому оставляем текст как есть
+    clean_text = text 
+    
+    try:
+        with MaxBot(MAX_BOT_TOKEN) as bot:
+            if media_type == 'image' and media_url:
+                try:
+                    img_data = requests.get(media_url, timeout=30).content
+                    temp_path = "temp_max_image.jpg"
+                    with open(temp_path, "wb") as f:
+                        f.write(img_data)
+                    
+                    bot.send_image(temp_path, chat_id=int(MAX_CHANNEL_ID), text=clean_text)
+                    os.remove(temp_path)
+                    print("✅ MAX: Успешно опубликовано (с фото)!")
+                    return True
+                except Exception as e:
+                    print(f"MAX: Не удалось загрузить фото ({e}). Постим только текст.")
+            
+            bot.send_message(clean_text, chat_id=int(MAX_CHANNEL_ID))
+            print("✅ MAX: Успешно опубликовано (текст)!")
+            return True
+    except Exception as e:
+        print(f"❌ MAX Ошибка: {e}")
         return False
 
 def main():
@@ -412,6 +442,9 @@ def main():
                 if tg_success:
                     vk_result = send_to_vk(post_body, best_news['media_type'], best_news['media_url'])
                     print(f"ВКонтакте: {'OK' if vk_result else 'FAIL'}")
+                    
+                    max_result = send_to_max(post_body, best_news['media_type'], best_news['media_url'])
+                    print(f"MAX: {'OK' if max_result else 'FAIL'}")
                     
                     save_last_theme(theme)
                     save_posted_link(best_news['link'])
