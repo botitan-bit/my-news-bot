@@ -79,6 +79,11 @@ BLACKLIST_WORDS = [
     "автобус", "маршрутка", "прямой эфир", "прямая трансляция", "смотрите эфир", "ожидается эфир"
 ]
 
+def ensure_state_files_exist():
+    for file in ["last_theme.txt", "posted_news.txt", "published_titles.txt", "posted_images.txt", "posted_videos.txt"]:
+        if not os.path.exists(file):
+            open(file, 'a').close()
+
 def get_posted_links():
     if os.path.exists("posted_news.txt"):
         with open("posted_news.txt", "r", encoding="utf-8") as f:
@@ -166,7 +171,7 @@ def is_blacklisted(text):
 
 def get_tg_web_videos(channel_name, theme, now):
     videos = []
-    posted_videos = get_posted_videos() # 👈 Загружаем историю видео
+    posted_videos = get_posted_videos()
     
     url = f"https://t.me/s/{channel_name}"
     try:
@@ -179,7 +184,6 @@ def get_tg_web_videos(channel_name, theme, now):
         posts = soup.select(".tgme_widget_message[data-post]")
         
         if not posts:
-            print(f"  [{channel_name}] Постов не найдено.")
             return []
         
         for post in reversed(posts):
@@ -207,7 +211,6 @@ def get_tg_web_videos(channel_name, theme, now):
             if video_url.startswith("//"):
                 video_url = "https:" + video_url
             
-            # 👇 ПРОВЕРКА НА ДУБЛИ ВИДЕО
             if video_url in posted_videos:
                 continue
             
@@ -239,7 +242,7 @@ def get_tg_web_videos(channel_name, theme, now):
             })
         
     except Exception as e:
-        print(f"Ошибка парсинга {channel_name}: {e}")
+        pass
     return videos
 
 def process_feeds(feed_list, theme, posted_links, posted_images, now):
@@ -554,7 +557,6 @@ def send_to_max(text, media_type, media_url):
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     
     attachments = []
-    # 👇 ДОБАВИЛИ ПОДДЕРЖКУ ВИДЕО ДЛЯ MAX
     if media_type == 'image' and media_url:
         attachments.append({"type": "image", "payload": {"url": media_url}})
     elif media_type == 'video' and media_url:
@@ -573,6 +575,8 @@ def send_to_max(text, media_type, media_url):
         return False
 
 def main():
+    ensure_state_files_exist() # 👈 ГАРАНТИРУЕМ, ЧТО ФАЙЛЫ СУЩЕСТВУЮТ
+    
     last_theme = get_last_theme()
     try:
         last_index = THEME_ORDER.index(last_theme)
@@ -611,7 +615,7 @@ def main():
                     
                     if best_news.get('media_url'):
                         if best_news['media_type'] == 'video':
-                            save_posted_video(best_news['media_url']) # 👈 СОХРАНЯЕМ ССЫЛКУ НА ВИДЕО
+                            save_posted_video(best_news['media_url'])
                         else:
                             save_posted_image(best_news['media_url'])
                         
