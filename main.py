@@ -224,8 +224,6 @@ def get_tg_web_videos(channel_name, theme, now):
                 if video_link and video_link.get("href"):
                     video_url = video_link.get("href")
             
-            # Убрали блок с превью (video_thumb), так как это картинка, а не видео
-            
             if not video_url:
                 continue
                 
@@ -418,7 +416,7 @@ def send_video(video_url, caption):
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            'Referer': 'https://web.telegram.org/'
+            'Referer': 'https://t.me/'
         }
         video_data = requests.get(video_url, headers=headers, timeout=30).content
         
@@ -466,7 +464,8 @@ def send_to_vk(text, media_type, media_url):
         vk_session = vk_api.VkApi(token=VK_TOKEN)
         vk = vk_session.get_api()
         
-        delay = random.randint(5, 15)
+        # Увеличиваем задержку до 60-120 секунд, чтобы обойти Flood Control от ВК
+        delay = random.randint(60, 120)
         print(f"  ⏳ Ждем {delay} сек. перед публикацией в ВК (защита от флуда)...")
         time.sleep(delay)
         
@@ -499,36 +498,48 @@ def send_to_max(text, media_type, media_url):
             print("  -> Скачиваем видео для MAX...")
             download_headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://web.telegram.org/'
+                'Accept': '*/*',
+                'Referer': 'https://t.me/'
             }
             
             video_resp = requests.get(media_url, headers=download_headers, timeout=60, allow_redirects=True)
             content_type = video_resp.headers.get('Content-Type', '')
             
-            if 'text/html' in content_type:
+            # Если пришел HTML вместо видео
+            if 'text/html' in content_type or len(video_resp.content) < 100 * 1024:
                 print("  ⚠️ Получен HTML вместо видео. Пытаемся извлечь прямую ссылку...")
+                
+                # Если это ссылка на пост (t.me/...), запрашиваем embed-версию
+                if 't.me/' in media_url and '/s/' not in media_url and '?embed' not in media_url:
+                    embed_url = media_url.split('?')[0] + '?embed=1'
+                    print(f"  -> Запрашиваем embed-версию поста: {embed_url}")
+                    video_resp = requests.get(embed_url, headers=download_headers, timeout=60, allow_redirects=True)
+                
                 soup_html = BeautifulSoup(video_resp.text, "html.parser")
+                
+                # 1. Ищем тег video
                 v_tag = soup_html.select_one("video[src]")
                 if not v_tag:
                     v_tag = soup_html.select_one("video source[src]")
-                if not v_tag:
-                    # Иногда прямая ссылка спрятана в мета-тегах
-                    meta_video = soup_html.select_one('meta[property="og:video"]')
-                    if meta_video and meta_video.get("content"):
-                         direct_url = meta_video.get("content")
-                         print(f"  -> Найдена ссылка в мета-теге, качаем заново...")
-                         video_resp = requests.get(direct_url, headers=download_headers, timeout=60, allow_redirects=True)
-                         content_type = video_resp.headers.get('Content-Type', '')
                 
+                direct_url = None
                 if v_tag and v_tag.get("src"):
                     direct_url = v_tag.get("src")
+                
+                # 2. Если тега нет, ищем мета-тег og:video
+                if not direct_url:
+                    meta_video = soup_html.select_one('meta[property="og:video"]')
+                    if meta_video and meta_video.get("content"):
+                        direct_url = html.unescape(meta_video.get("content"))
+                
+                if direct_url:
                     if direct_url.startswith("/"):
                         direct_url = urljoin("https://t.me", direct_url)
                     print(f"  -> Найдена прямая ссылка, качаем заново...")
                     video_resp = requests.get(direct_url, headers=download_headers, timeout=60, allow_redirects=True)
                     content_type = video_resp.headers.get('Content-Type', '')
+                else:
+                    print("  ❌ Не удалось найти ссылку на видео в HTML.")
             
             video_data = video_resp.content
             
