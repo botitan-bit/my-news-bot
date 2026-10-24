@@ -52,16 +52,7 @@ RSS_FEEDS = [
 SIGNATURE_TG = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
 SIGNATURE_MAX = '**[ПЕРВЫЕ НОВОСТИ](https://t.me/+l7bgzfXgngBkN2My)**'
 
-THEMES = {
-    # Изменили "сво" на "сво " чтобы не ловить слова "свой", "свои"
-    "СВО и Армия": ["сво ", "дрон", "бпла", "ракета", "фронт", "минобороны", "всу ", "штурм", "обстрел", "пво", "сводка", "наступление", "потери", "мобилизация", "армия", "военный", "беспилотник", "наши", "прилет", "хлопок", "боевик", "уничтожен", "ликвидирован"],
-    "Катастрофы": ["погиб", "жертв", "катастрофа", "крушение", "авиакатастрофа", "обрушение", "наводнение", "ураган", "смерч", "теракт", "взрыв", "пожар", "спасатели", "мчс", "эвакуация", "чрезвычайный", "трагедия", "погибли", "рухнул"],
-    "Криминал": ["убийство", "труп", "задержан", "арестован", "банда", "наркотик", "коррупция", "взятка", "мошенничество", "суд", "приговор", "разбой", "ограбление", "стрельба", "погоня", "разборка", "конфликт", "маньяк", "расчленил", "избил", "изнасиловал", "посадили", "следствие", "фсб", "полиция"],
-    "Мигранты": ["мигрант", "миграция", "иностранц", "депортация", "патент", "гастарбайтер", "диаспора", "приезж", "гражданство", "нелегал", "инородец", "узбек", "таджик", "киргиз", "армянин", "азербайджанец"],
-    "Иноагенты": ["иноагент", "нежелательная организация", "экстремист", "госдеп", "иностранное финансирование", "пособник", "шпион", "предатель", "госизмена", "финансирование", "цру"],
-    "ДТП и Аварии": ["дтп", "авария", "лобовое", "столкновение", "сбил", "насмерть", "травмы", "скорая", "госпитализирован", "перевернулся", "врезался", "мотоцикл", "пьяный водитель", "сбил пешехода", "машина", "камаз", "фура", "разбился", "погибли", "смерть"]
-}
-THEME_ORDER = ["СВО и Армия", "Катастрофы", "Криминал", "Мигранты", "Иноагенты", "ДТП и Аварии"]
+# МЫ УБРАЛИ THEMES, так как темы больше не фильтруются
 
 RUSSIA_KEYWORDS = [
     "росси", "рф", "путин", "кремл", "москв", "петербург", "ленинград", "курск", "белгород", 
@@ -69,10 +60,19 @@ RUSSIA_KEYWORDS = [
     "совфед", "мид", "минобороны", "росгвард", "фсб", "мвд", "мчс", "чечн", "татарстан", 
     "башкир", "сибир", "урал", "кавказ", "ростов", "краснодар", "самара", "екатеринбург", 
     "новосибирск", "омск", "томск", "иркутск", "якут", "владивосток", "хабаровск", 
-    "фронт", "шойгу", "белоусов", "губернатор", "сочи", "камчатк", "чукотк", "перм", "геленджик", "иванов", "нижний новгород", "певек"
+    "фронт", "шойгу", "белоусов", "губернатор", "сочи", "камчатк", "чукотк", "перм", "геленджик", "иванов", "нижний новгород", "певек",
+    "область", "край", "республика", "город", "район", "улица", "проспект"
 ]
 
+# СЮДА ДОБАВЛЕНЫ СЛОВА ДЛЯ ФИЛЬТРАЦИИ РЕКЛАМЫ
 BLACKLIST_WORDS = [
+    # Реклама и спам
+    "реклама", "промокод", "скидка", "заказать", "наш партнер", "erid", "маркировка", 
+    "казино", "ставки", "криптовалюта", "инвестиции", "заработок", "подписывайтесь", 
+    "перейти по ссылке", "спонсор", "купи", "магазин", "распродажа", "акция", "бонус", 
+    "подарок", "бесплатно", "только сегодня", "успей", "торопись", "оформить заказ",
+    
+    # Мусорные новости
     "какой сегодня", "какой праздник", "гороскоп", "день рождения", "история дня", 
     "в этот день", "народные приметы", "церковный календарь", "лунный календарь", "именины",
     "заседание", "законопроект", "бюджет", "форум", "выставка", "конференция", "экономика", "инфляция", "курс валют",
@@ -83,7 +83,6 @@ BLACKLIST_WORDS = [
     "автобус", "маршрутка", "прямой эфир", "прямая трансляция", "смотрите эфир", "ожидается эфир",
     "визит", "совещание", "рабочая поездка", "подписал", "вручил", "обсудил", "поздравил", "открыл", "посетил", "заявление", "пресс-конференция", "круглый стол",
     "трамп", "байден", "зеленский", "сша", "америк", "белый дом", "конгресс сша",
-    # Добавили техно-мусор
     "айфон", "iphone", "смартфон", "гаджет", "дуо", "duo"
 ]
 
@@ -143,23 +142,6 @@ def save_published_title(title):
         with open("published_titles.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(titles[-15:]) + "\n")
 
-def get_last_theme():
-    if os.path.exists("last_theme.txt"):
-        with open("last_theme.txt", "r", encoding="utf-8") as f:
-            return f.read().strip()
-    return THEME_ORDER[-1]
-
-def save_last_theme(theme):
-    with open("last_theme.txt", "w", encoding="utf-8") as f:
-        f.write(theme)
-
-def is_theme_match(text, theme):
-    text_lower = text.lower()
-    for keyword in THEMES[theme]:
-        if re.search(r'(?:^|[^а-яё])' + re.escape(keyword), text_lower):
-            return True
-    return False
-
 def is_russia_related(text):
     text_lower = text.lower()
     return any(kw in text_lower for kw in RUSSIA_KEYWORDS)
@@ -168,7 +150,7 @@ def is_blacklisted(text):
     text_lower = text.lower()
     return any(word in text_lower for word in BLACKLIST_WORDS)
 
-def get_tg_web_videos(channel_name, theme, now):
+def get_tg_web_videos(channel_name, now):
     videos = []
     posted_videos = get_posted_videos()
     posted_hashes = get_posted_hashes()
@@ -194,9 +176,9 @@ def get_tg_web_videos(channel_name, theme, now):
         
         count_video_tags = 0
         count_blacklisted = 0
-        count_not_theme = 0
         count_too_old = 0
         count_not_russia = 0
+        count_duplicate = 0
         
         for post in reversed(posts):
             time_tag = post.select_one(".tgme_widget_message_date time")
@@ -215,7 +197,6 @@ def get_tg_web_videos(channel_name, theme, now):
                 continue
             
             video_url = None
-            
             video_tag = post.select_one("video[src]")
             if video_tag and video_tag.get("src"):
                 video_url = video_tag.get("src")
@@ -234,10 +215,10 @@ def get_tg_web_videos(channel_name, theme, now):
                 continue
                 
             count_video_tags += 1
-            
             video_url = urljoin("https://t.me", video_url)
             
             if video_url in posted_videos:
+                count_duplicate += 1
                 continue
             
             text_tag = post.select_one(".tgme_widget_message_text")
@@ -250,21 +231,22 @@ def get_tg_web_videos(channel_name, theme, now):
                 
             text_hash = get_text_hash(clean_text)
             if text_hash in posted_hashes:
+                count_duplicate += 1
                 continue
                 
             post_id = post.get("data-post", "")
             post_link = f"https://t.me/{post_id}"
             
+            # Проверка на рекламу и мусор
             if is_blacklisted(clean_text): 
                 count_blacklisted += 1
                 continue
-            if not is_theme_match(clean_text, theme): 
-                count_not_theme += 1
-                continue
+            # Проверка на РФ (оставили, чтобы не тащить зарубежные новости)
             if not is_russia_related(clean_text):
                 count_not_russia += 1
                 continue
             
+            # Если всё ок, добавляем
             videos.append({
                 "title": clean_text[:60] + "...",
                 "summary": clean_text,
@@ -279,28 +261,29 @@ def get_tg_web_videos(channel_name, theme, now):
             })
         
         if len(videos) == 0:
-            print(f"  [{channel_name}] С видео: {count_video_tags} | Блэклист: {count_blacklisted} | Не тема: {count_not_theme} | Не РФ: {count_not_russia} | Старше 24ч: {count_too_old}")
+            print(f"  [{channel_name}] С видео: {count_video_tags} | Реклама/Мусор: {count_blacklisted} | Не РФ: {count_not_russia} | Старше 24ч: {count_too_old} | Дубли: {count_duplicate}")
         
     except Exception as e:
         print(f"Ошибка парсинга {channel_name}: {e}")
     return videos
 
-def get_news_candidates(theme):
+def get_news_candidates():
     now = datetime.now(timezone.utc)
     
     print(f"  -> Ищем видео в веб-версиях Telegram-каналов...")
     tg_videos = []
     tg_channels = ["pilachzx", "slavaded1337", "novosti_efir", "botcharov", "mnogonazi", "SHOCKkzn", "mash", "bazabazon", "shot_shot"]
     for ch in tg_channels:
-        vids = get_tg_web_videos(ch, theme, now)
+        vids = get_tg_web_videos(ch, now)
         tg_videos.extend(vids)
         
     if tg_videos:
+        # Сортируем по свежести и берем топ-5
         tg_videos = sorted(tg_videos, key=lambda x: x['age_hours'])
-        print(f"🔥 Найдено {len(tg_videos)} ВИДЕО в веб-версиях Telegram! Берем самые свежие.")
+        print(f"🔥 Найдено {len(tg_videos)} ВИДЕО без рекламы! Берем самые свежие.")
         return tg_videos[:5]
 
-    print("  ❌ Видео не найдено. Пропускаем запуск (картинки отключены).")
+    print("  ❌ Видео не найдено. Пропускаем запуск.")
     return []
 
 def call_groq(prompt):
@@ -359,7 +342,7 @@ def sanitize_html(text):
     text = text.replace('||BOLD_START||', '<b>').replace('||BOLD_END||', '</b>')
     return text
 
-def rewrite_with_ai(title, summary, theme):
+def rewrite_with_ai(title, summary):
     prompt = f"""Ты — профессиональный редактор новостного канала. Твоя задача — отредактировать исходный текст, исправив грамматические, синтаксические и стилистические ошибки, НО СОХРАНИВ ВСЕ ДЕТАЛИ И КОНТЕКСТ.
 
 ЗАДАЧА:
@@ -371,7 +354,6 @@ def rewrite_with_ai(title, summary, theme):
 6. ОБЯЗАТЕЛЬНО сохрани все географические названия (города, улицы, регионы) и имена.
 7. Убери только канцелярские фразы-филлеры ("По сведениям местных СМИ", "Дальнейшие детали пока неизвестны", "Ведется проверка").
 8. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать любые эмодзи, смайлики и графические символы.
-9. Если в тексте есть названия брендов на английском (например, iPhone), можешь перевести их на русский (Айфон) или оставить как есть, но остальной текст должен быть строго на русском.
 
 ОГРАНИЧЕНИЯ:
 - Не добавляй факты, которых нет в исходном тексте.
@@ -398,12 +380,9 @@ def rewrite_with_ai(title, summary, theme):
     raw_text = raw_text.replace('\\n', '\n')
     raw_text = raw_text[:1000] 
     
-    # Оставляем только допустимые символы (буквы, цифры, знаки препинания)
     raw_text = re.sub(r'[^\w\sа-яА-ЯёЁ.,;:!?()\[\]{}<>="\'/\-+#*&%$@|~^]', '', raw_text)
 
     plain_body = re.sub(r'<[^>]+>', '', raw_text)
-
-    # Убрали жесткий фильтр по английским буквам. Если ИИ оставил "iPhone", это не критично.
     
     if len(plain_body.strip()) < 20:
          return None
@@ -633,66 +612,55 @@ def send_to_max(text, media_type, media_url):
 def main():
     ensure_state_files_exist()
     
-    last_theme = get_last_theme()
-    try:
-        last_index = THEME_ORDER.index(last_theme)
-    except ValueError:
-        last_index = -1
-    next_index = (last_index + 1) % len(THEME_ORDER)
+    # УПРОЩЕННЫЙ ЗАПУСК: Без перебора тем
+    print(f"\n=== Ищем свежие новости ===")
+    candidates = get_news_candidates()
     
-    for i in range(len(THEME_ORDER)):
-        current_index = (next_index + i) % len(THEME_ORDER)
-        theme = THEME_ORDER[current_index]
+    if candidates:
+        print(f"Отправляем {len(candidates)} кандидатов на оценку ИИ...")
+        best_news = pick_most_important(candidates)
         
-        print(f"\n=== Ищем новости по теме: {theme} ===")
-        candidates = get_news_candidates(theme)
-        
-        if candidates:
-            print(f"Отправляем {len(candidates)} кандидатов на оценку ИИ...")
-            best_news = pick_most_important(candidates)
+        if best_news:
+            print(f"✅ Выбрана новость: {best_news['title']}")
+            post_body = rewrite_with_ai(best_news['title'], best_news['summary'])
             
-            if best_news:
-                print(f"✅ Выбрана новость: {best_news['title']}")
-                post_body = rewrite_with_ai(best_news['title'], best_news['summary'], theme)
-                
-                if post_body is None:
-                    print("❌ Новость отклонена. Ищем в следующей теме...")
-                    continue
+            if post_body is None:
+                print("❌ Новость отклонена ИИ. Пропускаем запуск.")
+                sys.exit(0)
 
-                print(f"Сгенерированный текст:\n{post_body}\n")
+            print(f"Сгенерированный текст:\n{post_body}\n")
+            
+            tg_success = send_to_telegram(post_body, best_news['media_type'], best_news['media_url'])
+            print(f"Telegram: {'OK' if tg_success else 'FAIL'}")
+            
+            if tg_success:
+                save_posted_link(best_news['link'])
+                save_published_title(best_news['title'])
+                save_posted_hash(best_news['text_hash'])
                 
-                tg_success = send_to_telegram(post_body, best_news['media_type'], best_news['media_url'])
-                print(f"Telegram: {'OK' if tg_success else 'FAIL'}")
+                print("\nЗапускаем параллельную отправку в ВК и MAX...")
                 
-                if tg_success:
-                    save_last_theme(theme)
-                    save_posted_link(best_news['link'])
-                    save_published_title(best_news['title'])
-                    save_posted_hash(best_news['text_hash'])
-                    
-                    print("\nЗапускаем параллельную отправку в ВК и MAX...")
-                    
-                    vk_thread = threading.Thread(
-                        target=send_to_vk, 
-                        args=(post_body, best_news['media_type'], best_news['media_url'])
-                    )
-                    max_thread = threading.Thread(
-                        target=send_to_max, 
-                        args=(post_body, best_news['media_type'], best_news['media_url'])
-                    )
-                    
-                    max_thread.start()
-                    vk_thread.start()
-                    
-                    max_thread.join()
-                    vk_thread.join()
-                    
-                    print(f"\n🎉 Готово! Следующая тема: {theme}")
-                    return
-            else:
-                 print("ИИ отклонил всех кандидатов. Ищем в следующей теме.")
+                vk_thread = threading.Thread(
+                    target=send_to_vk, 
+                    args=(post_body, best_news['media_type'], best_news['media_url'])
+                )
+                max_thread = threading.Thread(
+                    target=send_to_max, 
+                    args=(post_body, best_news['media_type'], best_news['media_url'])
+                )
+                
+                max_thread.start()
+                vk_thread.start()
+                
+                max_thread.join()
+                vk_thread.join()
+                
+                print(f"\n🎉 Готово! Бот успешно отработал.")
+                return
+        else:
+             print("ИИ отклонил всех кандидатов.")
 
-    print("\n❌ Не удалось найти видео. Пропускаем запуск.")
+    print("\n❌ Не удалось найти видео без рекламы. Пропускаем запуск.")
     sys.exit(0)
 
 if __name__ == "__main__":
