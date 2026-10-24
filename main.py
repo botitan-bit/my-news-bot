@@ -6,13 +6,11 @@ import sys
 import html
 import time
 import io
-import vk_api
 import urllib3
 import hashlib
 import random
 import threading
 from bs4 import BeautifulSoup
-from vk_api.upload import VkUpload
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
 
@@ -22,8 +20,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
-VK_TOKEN = os.environ.get("VK_TOKEN", "").strip()
-VK_GROUP_ID = os.environ.get("VK_GROUP_ID", "").strip()
 MAX_BOT_TOKEN = os.environ.get("MAX_BOT_TOKEN", "").strip()
 MAX_CHANNEL_ID = os.environ.get("MAX_CHANNEL_ID", "").strip()
 
@@ -52,8 +48,6 @@ RSS_FEEDS = [
 SIGNATURE_TG = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
 SIGNATURE_MAX = '**[ПЕРВЫЕ НОВОСТИ](https://t.me/+l7bgzfXgngBkN2My)**'
 
-# МЫ УБРАЛИ THEMES, так как темы больше не фильтруются
-
 RUSSIA_KEYWORDS = [
     "росси", "рф", "путин", "кремл", "москв", "петербург", "ленинград", "курск", "белгород", 
     "донбасс", "донецк", "луганск", "крым", "севастопол", "херсон", "запорож", "госдум", 
@@ -64,15 +58,12 @@ RUSSIA_KEYWORDS = [
     "область", "край", "республика", "город", "район", "улица", "проспект"
 ]
 
-# СЮДА ДОБАВЛЕНЫ СЛОВА ДЛЯ ФИЛЬТРАЦИИ РЕКЛАМЫ
 BLACKLIST_WORDS = [
-    # Реклама и спам
     "реклама", "промокод", "скидка", "заказать", "наш партнер", "erid", "маркировка", 
     "казино", "ставки", "криптовалюта", "инвестиции", "заработок", "подписывайтесь", 
     "перейти по ссылке", "спонсор", "купи", "магазин", "распродажа", "акция", "бонус", 
     "подарок", "бесплатно", "только сегодня", "успей", "торопись", "оформить заказ",
     
-    # Мусорные новости
     "какой сегодня", "какой праздник", "гороскоп", "день рождения", "история дня", 
     "в этот день", "народные приметы", "церковный календарь", "лунный календарь", "именины",
     "заседание", "законопроект", "бюджет", "форум", "выставка", "конференция", "экономика", "инфляция", "курс валют",
@@ -237,16 +228,13 @@ def get_tg_web_videos(channel_name, now):
             post_id = post.get("data-post", "")
             post_link = f"https://t.me/{post_id}"
             
-            # Проверка на рекламу и мусор
             if is_blacklisted(clean_text): 
                 count_blacklisted += 1
                 continue
-            # Проверка на РФ (оставили, чтобы не тащить зарубежные новости)
             if not is_russia_related(clean_text):
                 count_not_russia += 1
                 continue
             
-            # Если всё ок, добавляем
             videos.append({
                 "title": clean_text[:60] + "...",
                 "summary": clean_text,
@@ -278,7 +266,6 @@ def get_news_candidates():
         tg_videos.extend(vids)
         
     if tg_videos:
-        # Сортируем по свежести и берем топ-5
         tg_videos = sorted(tg_videos, key=lambda x: x['age_hours'])
         print(f"🔥 Найдено {len(tg_videos)} ВИДЕО без рекламы! Берем самые свежие.")
         return tg_videos[:5]
@@ -439,28 +426,6 @@ def send_to_telegram(text, media_type, media_url):
     except: pass
     return False
 
-def send_to_vk(text, media_type, media_url):
-    if not VK_TOKEN or not VK_GROUP_ID: return False
-        
-    print("Отправляем пост во ВКонтакте...")
-    clean_text = re.sub(r'<[^>]+>', '', text)
-    clean_text = html.unescape(clean_text).strip()
-    
-    try:
-        vk_session = vk_api.VkApi(token=VK_TOKEN)
-        vk = vk_session.get_api()
-        
-        delay = random.randint(60, 120)
-        print(f"  ⏳ Ждем {delay} сек. перед публикацией в ВК (защита от флуда)...")
-        time.sleep(delay)
-        
-        vk.wall.post(owner_id=f"-{VK_GROUP_ID}", message=clean_text, from_group=1)
-        print("✅ ВК: Успешно опубликовано!")
-        return True
-    except Exception as e:
-        print(f"❌ ВК Ошибка: {e}")
-        return False
-
 def send_to_max(text, media_type, media_url):
     if not MAX_BOT_TOKEN or not MAX_CHANNEL_ID: 
         print("MAX: Нет токена или ID канала.")
@@ -612,7 +577,6 @@ def send_to_max(text, media_type, media_url):
 def main():
     ensure_state_files_exist()
     
-    # УПРОЩЕННЫЙ ЗАПУСК: Без перебора тем
     print(f"\n=== Ищем свежие новости ===")
     candidates = get_news_candidates()
     
@@ -638,22 +602,10 @@ def main():
                 save_published_title(best_news['title'])
                 save_posted_hash(best_news['text_hash'])
                 
-                print("\nЗапускаем параллельную отправку в ВК и MAX...")
-                
-                vk_thread = threading.Thread(
-                    target=send_to_vk, 
-                    args=(post_body, best_news['media_type'], best_news['media_url'])
-                )
-                max_thread = threading.Thread(
-                    target=send_to_max, 
-                    args=(post_body, best_news['media_type'], best_news['media_url'])
-                )
-                
-                max_thread.start()
-                vk_thread.start()
-                
-                max_thread.join()
-                vk_thread.join()
+                print("\nЗапускаем отправку в MAX...")
+                # ВК временно отключен
+                max_result = send_to_max(post_body, best_news['media_type'], best_news['media_url'])
+                print(f"MAX: {'OK' if max_result else 'FAIL'}")
                 
                 print(f"\n🎉 Готово! Бот успешно отработал.")
                 return
