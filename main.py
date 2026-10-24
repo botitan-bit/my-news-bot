@@ -10,6 +10,7 @@ import vk_api
 import urllib3
 import hashlib
 import random
+import threading
 from bs4 import BeautifulSoup
 from vk_api.upload import VkUpload
 from urllib.parse import urljoin
@@ -79,7 +80,8 @@ BLACKLIST_WORDS = [
     "спектакль", "ледовый", "фигурист", "авербух", "петросян", "концерт", "развлечение", "шоу", "праздник", "фестиваль", "выступление",
     "продолжают спецоперацию", "выполняют задачи", "боевая готовность", "полная готовность", "активные действия", "выполняют боевые задачи", "решают задачи", "контроль над ситуацией",
     "автобус", "маршрутка", "прямой эфир", "прямая трансляция", "смотрите эфир", "ожидается эфир",
-    "визит", "совещание", "рабочая поездка", "подписал", "вручил", "обсудил", "поздравил", "открыл", "посетил", "заявление", "пресс-конференция", "круглый стол"
+    "визит", "совещание", "рабочая поездка", "подписал", "вручил", "обсудил", "поздравил", "открыл", "посетил", "заявление", "пресс-конференция", "круглый стол",
+    "трамп", "байден", "зеленский", "сша", "америк", "белый дом", "конгресс сша"
 ]
 
 def ensure_state_files_exist():
@@ -191,6 +193,7 @@ def get_tg_web_videos(channel_name, theme, now):
         count_blacklisted = 0
         count_not_theme = 0
         count_too_old = 0
+        count_not_russia = 0
         
         for post in reversed(posts):
             time_tag = post.select_one(".tgme_widget_message_date time")
@@ -255,6 +258,9 @@ def get_tg_web_videos(channel_name, theme, now):
             if not is_theme_match(clean_text, theme): 
                 count_not_theme += 1
                 continue
+            if not is_russia_related(clean_text):
+                count_not_russia += 1
+                continue
             
             videos.append({
                 "title": clean_text[:60] + "...",
@@ -270,7 +276,7 @@ def get_tg_web_videos(channel_name, theme, now):
             })
         
         if len(videos) == 0:
-            print(f"  [{channel_name}] С видео: {count_video_tags} | Блэклист: {count_blacklisted} | Не тема: {count_not_theme} | Старше 24ч: {count_too_old}")
+            print(f"  [{channel_name}] С видео: {count_video_tags} | Блэклист: {count_blacklisted} | Не тема: {count_not_theme} | Не РФ: {count_not_russia} | Старше 24ч: {count_too_old}")
         
     except Exception as e:
         print(f"Ошибка парсинга {channel_name}: {e}")
@@ -351,18 +357,19 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
-    prompt = f"""Ты — профессиональный редактор новостного канала. Твоя задача — отредактировать текст, исправив грамматические, синтаксические и стилистические ошибки, НО СОХРАНИВ ВСЕ ДЕТАЛИ И КОНТЕКСТ.
+    # ОБНОВЛЕННЫЙ ПРОМПТ: Слегка меняет оригинал, делает его грамотным
+    prompt = f"""Ты — профессиональный редактор новостного канала. Твоя задача — отредактировать исходный текст, исправив грамматические, синтаксические и стилистические ошибки, НО СОХРАНИВ ВСЕ ДЕТАЛИ И КОНТЕКСТ.
 
 ЗАДАЧА:
-1. Исправь все ошибки в склонениях, падежах, числах, предлогах и роде.
-2. Приведи предложения к литературной русской речи.
-3. ВАЖНО: Если исходный текст обрывается на полуслове, НЕ ВЫДУМЫВАЙ окончание и не добавляй факты, которых нет. Просто удали этот незаконченный обрывок текста, оставив только ту часть, которая имеет логическое завершение.
-4. Не дублируй заголовок в первом предложении текста. Переходи сразу к сути.
-5. ОБЯЗАТЕЛЬНО сохрани все географические названия (города, улицы, регионы) и имена.
-6. Убери только канцелярские фразы-филлеры ("По сведениям местных СМИ", "Дальнейшие детали пока неизвестны", "Ведется проверка").
-7. Заголовок выдели тегом <b>...</b>.
-8. После заголовка сделай ДВА переноса строки.
-9. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать любые эмодзи, смайлики и графические символы.
+1. Сформируй грамотный заголовок из первых предложений исходного текста. Не придумывай новых фактов и кликбейта, просто сделай его законченным по смыслу. Выдели заголовок тегом <b>...</b>.
+2. После заголовка сделай ДВА переноса строки и напиши основной текст.
+3. Приведи предложения к литературной русской речи.
+4. ВАЖНО: Если исходный текст обрывается на полуслове, НЕ ВЫДУМЫВАЙ окончание. Просто удали этот незаконченный обрывок, оставив только ту часть, которая имеет логическое завершение.
+5. Не дублируй заголовок в первом предложении текста.
+6. ОБЯЗАТЕЛЬНО сохрани все географические названия (города, улицы, регионы) и имена.
+7. Убери только канцелярские фразы-филлеры ("По сведениям местных СМИ", "Дальнейшие детали пока неизвестны", "Ведется проверка").
+8. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать любые эмодзи, смайлики и графические символы.
+9. Не используй английские буквы.
 
 ОГРАНИЧЕНИЯ:
 - Не добавляй факты, которых нет в исходном тексте.
@@ -372,16 +379,14 @@ def rewrite_with_ai(title, summary, theme):
 Только готовый исправленный пост, без твоих комментариев.
 
 ИСХОДНЫЙ ТЕКСТ:
-Заголовок: {title}
-Текст: {summary}
+{summary}
 """
     raw_text = call_groq(prompt)
     
     if not raw_text:
         print("⚠️ ИИ вернул пустоту. Используем оригинальный текст.")
-        clean_title = re.sub(r'<[^>]+>', '', title).strip()
         clean_summary = summary.strip()
-        raw_text = f"<b>{clean_title}</b>\n\n{clean_summary}"
+        raw_text = f"<b>Срочные новости</b>\n\n{clean_summary}"
         
     raw_text = re.sub(r'^(Category|Рубрика|Категория):.*?\n', '', raw_text, flags=re.IGNORECASE)
     for pattern in [r'—\s*в материале[^.]*\.', r'—\s*подробнее[^.]*\.', r'—\s*читайте[^.]*\.', r'—\s*на сайте[^.]*\.']:
@@ -464,7 +469,6 @@ def send_to_vk(text, media_type, media_url):
         vk_session = vk_api.VkApi(token=VK_TOKEN)
         vk = vk_session.get_api()
         
-        # Увеличиваем задержку до 60-120 секунд, чтобы обойти Flood Control от ВК
         delay = random.randint(60, 120)
         print(f"  ⏳ Ждем {delay} сек. перед публикацией в ВК (защита от флуда)...")
         time.sleep(delay)
@@ -505,11 +509,9 @@ def send_to_max(text, media_type, media_url):
             video_resp = requests.get(media_url, headers=download_headers, timeout=60, allow_redirects=True)
             content_type = video_resp.headers.get('Content-Type', '')
             
-            # Если пришел HTML вместо видео
             if 'text/html' in content_type or len(video_resp.content) < 100 * 1024:
                 print("  ⚠️ Получен HTML вместо видео. Пытаемся извлечь прямую ссылку...")
                 
-                # Если это ссылка на пост (t.me/...), запрашиваем embed-версию
                 if 't.me/' in media_url and '/s/' not in media_url and '?embed' not in media_url:
                     embed_url = media_url.split('?')[0] + '?embed=1'
                     print(f"  -> Запрашиваем embed-версию поста: {embed_url}")
@@ -517,7 +519,6 @@ def send_to_max(text, media_type, media_url):
                 
                 soup_html = BeautifulSoup(video_resp.text, "html.parser")
                 
-                # 1. Ищем тег video
                 v_tag = soup_html.select_one("video[src]")
                 if not v_tag:
                     v_tag = soup_html.select_one("video source[src]")
@@ -526,7 +527,6 @@ def send_to_max(text, media_type, media_url):
                 if v_tag and v_tag.get("src"):
                     direct_url = v_tag.get("src")
                 
-                # 2. Если тега нет, ищем мета-тег og:video
                 if not direct_url:
                     meta_video = soup_html.select_one('meta[property="og:video"]')
                     if meta_video and meta_video.get("content"):
@@ -668,11 +668,22 @@ def main():
                     save_published_title(best_news['title'])
                     save_posted_hash(best_news['text_hash'])
                     
-                    vk_result = send_to_vk(post_body, best_news['media_type'], best_news['media_url'])
-                    print(f"ВКонтакте: {'OK' if vk_result else 'FAIL'}")
+                    print("\nЗапускаем параллельную отправку в ВК и MAX...")
                     
-                    max_result = send_to_max(post_body, best_news['media_type'], best_news['media_url'])
-                    print(f"MAX: {'OK' if max_result else 'FAIL'}")
+                    vk_thread = threading.Thread(
+                        target=send_to_vk, 
+                        args=(post_body, best_news['media_type'], best_news['media_url'])
+                    )
+                    max_thread = threading.Thread(
+                        target=send_to_max, 
+                        args=(post_body, best_news['media_type'], best_news['media_url'])
+                    )
+                    
+                    max_thread.start()
+                    vk_thread.start()
+                    
+                    max_thread.join()
+                    vk_thread.join()
                     
                     print(f"\n🎉 Готово! Следующая тема: {theme}")
                     return
