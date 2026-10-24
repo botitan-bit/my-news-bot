@@ -2,3 +2,4 @@ feedparser
 requests
 vk_api
 beautifulsoup4
+maxapi-sdk
