@@ -169,7 +169,12 @@ def get_tg_web_videos(channel_name, theme, now):
     
     url = f"https://t.me/s/{channel_name}"
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        # Добавляем агрессивный User-Agent, чтобы Telegram не блокировал парсинг
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8'
+        }
         resp = requests.get(url, timeout=10, headers=headers)
         if resp.status_code != 200:
             return []
@@ -226,8 +231,8 @@ def get_tg_web_videos(channel_name, theme, now):
                 
             count_video_tags += 1
             
-            if video_url.startswith("//"):
-                video_url = "https:" + video_url
+            # 👇 ЖЕЛЕЗОБЕТОННАЯ ССЫЛКА
+            video_url = urljoin("https://t.me", video_url)
             
             if video_url in posted_videos:
                 continue
@@ -414,8 +419,8 @@ def send_video(video_url, caption):
     except: pass
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            'Referer': 'https://t.me/'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Referer': 'https://web.telegram.org/'
         }
         video_data = requests.get(video_url, headers=headers, timeout=30).content
         
@@ -490,11 +495,14 @@ def send_to_max(text, media_type, media_url):
     try:
         if media_type == 'video' and media_url:
             print("  -> Скачиваем видео для MAX...")
+            # 👇 ЗАМАСКИРОВАННЫЕ ЗАГОЛОВКИ ДЛЯ ОБХОДА БЛОКИРОВКИ TELEGRAM
             download_headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                'Referer': 'https://t.me/'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': 'https://web.telegram.org/'
             }
-            video_resp = requests.get(media_url, headers=download_headers, timeout=60)
+            video_resp = requests.get(media_url, headers=download_headers, timeout=60, allow_redirects=True)
             video_data = video_resp.content
             content_type = video_resp.headers.get('Content-Type', '')
             
