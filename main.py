@@ -9,6 +9,8 @@ import io
 import vk_api
 import urllib3
 import hashlib
+import asyncio
+from maxapi import Bot
 from bs4 import BeautifulSoup
 from vk_api.upload import VkUpload
 from urllib.parse import urljoin
@@ -353,26 +355,35 @@ def sanitize_html(text):
     return text
 
 def rewrite_with_ai(title, summary, theme):
-    prompt = f"""Ты — профессиональный редактор жесткого новостного канала. 
-Перепиши новость так, чтобы она была понятной, цепляющей и ТОЛЬКО НА РУССКОМ ЯЗЫКЕ.
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ любые английские слова.
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕН канцелярский стиль. Не пиши фразы вроде "По сведениям местных СМИ", "полиция расследует инцидент", "Дальнейшие детали пока неизвестны", "Ведется проверка". Дай только суть фактов.
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать любые эмодзи, смайлики и графические символы. 
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО переводить смайлики и эмодзи в слова. Если в исходнике смайлик машины, пиши "автомобиль", а не "четырёхколёсное". Пиши по-человечески.
-Если в исходном тексте ТОЛЬКО общие фразы и нет конкретики, напиши слово NONE.
+    # 👇 ЖЕЛЕЗОБЕТОННЫЙ ПРОМПТ ДЛЯ КОРРЕКТУРЫ
+    prompt = f"""Ты — профессиональный корректор и редактор новостного канала. Твоя единственная задача — исправить грамматические, синтаксические и стилистические ошибки в предоставленном тексте.
 
-Формат ответа:
-1. Заголовок в теге <b>...</b>. Сделай его громким и понятным.
-2. ДВА переноса строки.
-3. Краткий текст с фактами (строго на русском, без эмодзи).
+КОНТЕКСТ:
+Исходный текст новости может быть сырым, с ошибками в падежах, склонениях, предлогах и роде (например, "нелегальный скорая").
 
-Исходный заголовок: {title}
-Исходный текст: {summary}
+ЗАДАЧА:
+1. Исправь все ошибки в склонениях, падежах, числах, предлогах и роде.
+2. Приведи предложения к литературной русской речи, но НЕ меняй смысл и не добавляй новых фактов.
+3. Убери канцелярит и фразы-филлеры ("По сведениям местных СМИ", "Дальнейшие детали пока неизвестны", "Ведется проверка").
+4. Заголовок выдели тегом <b>...</b>.
+5. После заголовка сделай ДВА переноса строки.
+6. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать любые эмодзи, смайлики и графические символы.
+
+ОГРАНИЧЕНИЯ:
+- Не переписывай новость заново, только исправляй.
+- Если исходный текст — бессвязный набор слов, напиши NONE.
+
+ФОРМАТ ОТВЕТА:
+Только готовый исправленный пост, без твоих комментариев.
+
+ИСХОДНЫЙ ТЕКСТ:
+Заголовок: {title}
+Текст: {summary}
 """
     raw_text = call_groq(prompt)
     
     if not raw_text or "NONE" in raw_text.upper():
-        print("⚠️ ИИ отклонил новость (нет конкретики).")
+        print("⚠️ ИИ отклонил новость (нет конкретики или текст бессвязен).")
         return None
         
     raw_text = re.sub(r'^(Category|Рубрика|Категория):.*?\n', '', raw_text, flags=re.IGNORECASE)
@@ -383,7 +394,7 @@ def rewrite_with_ai(title, summary, theme):
     raw_text = raw_text.replace('\\n', '\n')
     raw_text = raw_text[:900]
     
-    # 👇 УБИРАЕМ ВСЕ ЭМОДЗИ ИЗ ТЕКСТА (страховка на случай, если ИИ ослушается)
+    # 👇 УБИРАЕМ ВСЕ ЭМОДЗИ (СТРАХОВКА)
     raw_text = re.sub(r'[^\w\sа-яА-ЯёЁ.,;:!?()\[\]{}<>="\'/\-+#*&%$@|~^]', '', raw_text)
 
     plain_body = re.sub(r'<[^>]+>', '', raw_text)
@@ -464,118 +475,44 @@ def send_to_vk(text, media_type, media_url):
         print(f"❌ ВК Ошибка: {e}")
         return False
 
+# 👇 НОВАЯ ФУНКЦИЯ ОТПРАВКИ В MAX ЧЕРЕЗ ОФИЦИАЛЬНОЕ SDK
+async def _send_media_via_sdk(text, video_url=None):
+    bot = Bot(token=MAX_BOT_TOKEN)
+    
+    clean_text = text.replace('<b>', '**').replace('</b>', '**')
+    clean_text = html.unescape(clean_text).strip()
+    clean_text = f"{clean_text}\n\n{SIGNATURE_MAX}"
+    
+    try:
+        if video_url:
+            # SDK сам скачает видео, загрузит его на сервер MAX и обработает ошибку attachment.not.ready
+            await bot.send_video(
+                chat_id=int(MAX_CHANNEL_ID),
+                video=video_url,
+                text=clean_text,
+                format="markdown"
+            )
+        else:
+            await bot.send_message(
+                chat_id=int(MAX_CHANNEL_ID),
+                text=clean_text,
+                format="markdown"
+            )
+        print("✅ MAX (SDK): Успешно опубликовано!")
+        return True
+    except Exception as e:
+        print(f"❌ MAX (SDK) Ошибка: {e}")
+        return False
+
 def send_to_max(text, media_type, media_url):
     if not MAX_BOT_TOKEN or not MAX_CHANNEL_ID: 
         print("MAX: Нет токена или ID канала.")
         return False
         
-    print(f"Отправляем пост в MAX (канал: {MAX_CHANNEL_ID})...")
-    clean_text = text.replace('<b>', '**').replace('</b>', '**')
-    clean_text = html.unescape(clean_text).strip()
-    clean_text = f"{clean_text}\n\n{SIGNATURE_MAX}"
+    print(f"Отправляем пост в MAX (канал: {MAX_CHANNEL_ID}) через SDK...")
     
-    headers = {
-        "Authorization": MAX_BOT_TOKEN,
-        "Content-Type": "application/json"
-    }
-    
-    attachments = []
-    
-    try:
-        if media_type == 'video' and media_url:
-            print("  -> Скачиваем видео для MAX...")
-            download_headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                'Referer': 'https://t.me/'
-            }
-            video_resp = requests.get(media_url, headers=download_headers, timeout=60)
-            video_data = video_resp.content
-            content_type = video_resp.headers.get('Content-Type', '')
-            
-            if len(video_data) < 100 * 1024 or 'text/html' in content_type:
-                print(f"  ❌ Видео не скачалось (размер: {len(video_data)} байт, тип: {content_type}). Постим только текст в MAX.")
-            else:
-                if len(video_data) > 250 * 1024 * 1024:
-                    print("  ❌ Видео больше 250 МБ, MAX его не примет.")
-                else:
-                    print("  -> Запрашиваем URL для загрузки в MAX...")
-                    upload_url_resp = requests.post(
-                        "https://platform-api2.max.ru/uploads?type=video",
-                        headers={"Authorization": MAX_BOT_TOKEN},
-                        timeout=15,
-                        verify=False
-                    )
-                    upload_url_resp.raise_for_status()
-                    upload_data = upload_url_resp.json()
-                    
-                    upload_url = upload_data.get("url")
-                    media_token = upload_data.get("token")
-                    
-                    if upload_url and media_token:
-                        print(f"  -> Загружаем видео в MAX (размер: {len(video_data) // (1024*1024)} МБ)...")
-                        upload_headers = {"Authorization": MAX_BOT_TOKEN}
-                        
-                        upload_resp = requests.post(
-                            upload_url,
-                            headers=upload_headers,
-                            files={'data': ('video.mp4', video_data, 'video/mp4')},
-                            timeout=180 
-                        )
-                        
-                        if upload_resp.status_code in [200, 201]:
-                            print("  ✅ Видео загружено. Ждем обработки...")
-                            time.sleep(15) 
-                            attachments.append({
-                                "type": "video",
-                                "payload": {"token": media_token}
-                            })
-                        else:
-                            print(f"  ❌ Ошибка загрузки видео: {upload_resp.status_code}")
-                    else:
-                        print("  ❌ MAX не вернул URL или токен.")
-    
-    except Exception as e:
-        print(f"  ⚠️ Ошибка подготовки медиа для MAX: {e}")
-
-    payload = {"text": clean_text, "format": "markdown"}
-    if attachments:
-        payload["attachments"] = attachments
-
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            url = f"https://platform-api2.max.ru/messages?chat_id={MAX_CHANNEL_ID}"
-            response = requests.post(url, headers=headers, json=payload, timeout=20, verify=False)
-            
-            print(f"  DEBUG: Ответ MAX (попытка {attempt+1}): {response.status_code} - {response.text}")
-            
-            if response.status_code == 200:
-                print("✅ MAX: Успешно опубликовано!")
-                return True
-            elif response.status_code == 400:
-                error_data = response.json()
-                if error_data.get("code") == "attachment.not.ready":
-                    if attempt < max_retries - 1:
-                        wait_time = (attempt + 1) * 10
-                        print(f"  ⏳ Файл ещё не обработан (попытка {attempt+1}/{max_retries}). Ждем {wait_time} секунд...")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        print(f"  ❌ Файл так и не обработался после {max_retries} попыток.")
-                        return False
-                else:
-                    print(f"  ❌ Ошибка MAX: {error_data}")
-                    return False
-            else:
-                response.raise_for_status()
-                
-        except Exception as e:
-            print(f"  ❌ Ошибка отправки в MAX (попытка {attempt+1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(10)
-            else:
-                return False
-    return False
+    # Запускаем асинхронную функцию SDK
+    return asyncio.run(_send_media_via_sdk(text, media_url if media_type == 'video' else None))
 
 def main():
     ensure_state_files_exist()
