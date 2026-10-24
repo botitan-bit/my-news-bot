@@ -9,6 +9,7 @@ import io
 import vk_api
 import urllib3
 import hashlib
+import random
 from bs4 import BeautifulSoup
 from vk_api.upload import VkUpload
 from urllib.parse import urljoin
@@ -169,7 +170,6 @@ def get_tg_web_videos(channel_name, theme, now):
     
     url = f"https://t.me/s/{channel_name}"
     try:
-        # Добавляем агрессивный User-Agent, чтобы Telegram не блокировал парсинг
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
@@ -213,25 +213,24 @@ def get_tg_web_videos(channel_name, theme, now):
             video_tag = post.select_one("video[src]")
             if video_tag and video_tag.get("src"):
                 video_url = video_tag.get("src")
+                
+            if not video_url:
+                source_tag = post.select_one("video source[src]")
+                if source_tag and source_tag.get("src"):
+                    video_url = source_tag.get("src")
             
             if not video_url:
                 video_link = post.select_one("a.tgme_widget_message_video_player")
                 if video_link and video_link.get("href"):
                     video_url = video_link.get("href")
             
-            if not video_url:
-                video_thumb = post.select_one("i.tgme_widget_message_video_thumb")
-                if video_thumb and video_thumb.get("style"):
-                    match = re.search(r"url\('([^']+)'\)", video_thumb.get("style", ""))
-                    if match:
-                        video_url = match.group(1)
+            # Убрали блок с превью (video_thumb), так как это картинка, а не видео
             
             if not video_url:
                 continue
                 
             count_video_tags += 1
             
-            # 👇 ЖЕЛЕЗОБЕТОННАЯ ССЫЛКА
             video_url = urljoin("https://t.me", video_url)
             
             if video_url in posted_videos:
@@ -394,7 +393,6 @@ def rewrite_with_ai(title, summary, theme):
     raw_text = raw_text.replace('\\n', '\n')
     raw_text = raw_text[:1000] 
     
-    # Физически вырезаем все эмодзи
     raw_text = re.sub(r'[^\w\sа-яА-ЯёЁ.,;:!?()\[\]{}<>="\'/\-+#*&%$@|~^]', '', raw_text)
 
     plain_body = re.sub(r'<[^>]+>', '', raw_text)
@@ -468,6 +466,10 @@ def send_to_vk(text, media_type, media_url):
         vk_session = vk_api.VkApi(token=VK_TOKEN)
         vk = vk_session.get_api()
         
+        delay = random.randint(5, 15)
+        print(f"  ⏳ Ждем {delay} сек. перед публикацией в ВК (защита от флуда)...")
+        time.sleep(delay)
+        
         vk.wall.post(owner_id=f"-{VK_GROUP_ID}", message=clean_text, from_group=1)
         print("✅ ВК: Успешно опубликовано!")
         return True
@@ -495,18 +497,42 @@ def send_to_max(text, media_type, media_url):
     try:
         if media_type == 'video' and media_url:
             print("  -> Скачиваем видео для MAX...")
-            # 👇 ЗАМАСКИРОВАННЫЕ ЗАГОЛОВКИ ДЛЯ ОБХОДА БЛОКИРОВКИ TELEGRAM
             download_headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9',
                 'Referer': 'https://web.telegram.org/'
             }
+            
             video_resp = requests.get(media_url, headers=download_headers, timeout=60, allow_redirects=True)
-            video_data = video_resp.content
             content_type = video_resp.headers.get('Content-Type', '')
             
-            if len(video_data) < 100 * 1024 or 'text/html' in content_type:
+            if 'text/html' in content_type:
+                print("  ⚠️ Получен HTML вместо видео. Пытаемся извлечь прямую ссылку...")
+                soup_html = BeautifulSoup(video_resp.text, "html.parser")
+                v_tag = soup_html.select_one("video[src]")
+                if not v_tag:
+                    v_tag = soup_html.select_one("video source[src]")
+                if not v_tag:
+                    # Иногда прямая ссылка спрятана в мета-тегах
+                    meta_video = soup_html.select_one('meta[property="og:video"]')
+                    if meta_video and meta_video.get("content"):
+                         direct_url = meta_video.get("content")
+                         print(f"  -> Найдена ссылка в мета-теге, качаем заново...")
+                         video_resp = requests.get(direct_url, headers=download_headers, timeout=60, allow_redirects=True)
+                         content_type = video_resp.headers.get('Content-Type', '')
+                
+                if v_tag and v_tag.get("src"):
+                    direct_url = v_tag.get("src")
+                    if direct_url.startswith("/"):
+                        direct_url = urljoin("https://t.me", direct_url)
+                    print(f"  -> Найдена прямая ссылка, качаем заново...")
+                    video_resp = requests.get(direct_url, headers=download_headers, timeout=60, allow_redirects=True)
+                    content_type = video_resp.headers.get('Content-Type', '')
+            
+            video_data = video_resp.content
+            
+            if len(video_data) < 100 * 1024 or 'video/' not in content_type:
                 print(f"  ❌ Видео не скачалось (размер: {len(video_data)} байт, тип: {content_type}). Постим только текст в MAX.")
             else:
                 if len(video_data) > 250 * 1024 * 1024:
