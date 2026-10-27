@@ -54,9 +54,8 @@ RSS_FEEDS = [
 SIGNATURE_TG = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
 SIGNATURE_MAX = '**[ПЕРВЫЕ НОВОСТИ](https://max.ru/channel_pervonovosti)**'
 
-LOCAL_CHANNELS = {
-    "SHOCKkzn": "Казань",
-}
+# 🆕 Правило для Казани удалено, так как канал SHOCKkzn убран из поиска
+LOCAL_CHANNELS = {}
 
 BLACKLIST_WORDS = [
     # ЖИВОТНЫЕ И ПРИРОДА
@@ -415,10 +414,15 @@ def get_tg_web_videos(channel_name, now):
 
 def get_news_candidates():
     now = datetime.now(timezone.utc)
+    
+    # 🆕 НОВЫЙ СПИСОК КАНАЛОВ
     tg_channels = [
-        "pilachzx", "slavaded1337", "novosti_efir", "botcharov", "mnogonazi", 
-        "SHOCKkzn", "mash", "bazabazon", "shot_shot",
-        "readovkanews", "rbc_news", "bbbreaking", "moscowtimes_ru"
+        "ragulaku",
+        "pilachzx",
+        "novosti_efir",
+        "slavaded1337",
+        "botcharov",
+        "mnogonazi"
     ]
     
     print(f"  -> Ищем видео в веб-версиях Telegram-каналов...")
