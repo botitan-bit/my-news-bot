@@ -57,6 +57,12 @@ SIGNATURE_MAX = '**[ПЕРВЫЕ НОВОСТИ](https://max.ru/channel_pervonov
 LOCAL_CHANNELS = {}
 
 BLACKLIST_WORDS = [
+    # 🆕 ПРИВЕТСТВИЯ И ЛИЧНЫЕ ОБРАЩЕНИЯ
+    "доброе утро", "добрый день", "добрый вечер", "доброй ночи", "всем привет", 
+    "приветствую", "друзья", "подписчики", "дорогие", "хорошего дня", "хорошего настроения",
+    "отличного дня", "продуктивного дня", "с богом", "берегите себя", "с праздником",
+    "с днем рождения", "напоминаю", "делюсь", "личное мнение", "мысли вслух",
+
     # ЖИВОТНЫЕ И ПРИРОДА
     "котят", "котенок", "кошка", "кот ", "щенок", "собак", "животн", "зоопарк", 
     "заповедник", "фотоловушк", "барс", "тигр", "лев ", "медвед", "природ", 
@@ -280,7 +286,7 @@ def get_tg_web_photos(channel_name, now):
             })
         
         if len(photos) == 0:
-            print(f"  [{channel_name}] С фото: {count_photo_tags} | Реклама/Спорт/Животные: {count_blacklisted} | Старше 18ч: {count_too_old} | Дубли: {count_duplicate}")
+            print(f"  [{channel_name}] С фото: {count_photo_tags} | Реклама/Мусор: {count_blacklisted} | Старше 18ч: {count_too_old} | Дубли: {count_duplicate}")
         
     except Exception as e:
         print(f"Ошибка парсинга фото {channel_name}: {e}")
@@ -405,7 +411,7 @@ def get_tg_web_videos(channel_name, now):
             })
         
         if len(videos) == 0:
-            print(f"  [{channel_name}] С видео: {count_video_tags} | Реклама/Спорт/Животные: {count_blacklisted} | Старше 18ч: {count_too_old} | Дубли: {count_duplicate}")
+            print(f"  [{channel_name}] С видео: {count_video_tags} | Реклама/Мусор: {count_blacklisted} | Старше 18ч: {count_too_old} | Дубли: {count_duplicate}")
         
     except Exception as e:
         print(f"Ошибка парсинга {channel_name}: {e}")
@@ -430,7 +436,6 @@ def get_news_candidates():
         all_videos.extend(vids)
         
     if all_videos:
-        # 🆕 БЕРЕМ ПО 1 САМОМУ СВЕЖЕМУ ВИДЕО С КАЖДОГО КАНАЛА
         channel_best = {}
         for v in all_videos:
             ch = v['channel']
@@ -449,7 +454,6 @@ def get_news_candidates():
         all_photos.extend(pics)
         
     if all_photos:
-        # 🆕 БЕРЕМ ПО 1 САМОМУ СВЕЖЕМУ ФОТО С КАЖДОГО КАНАЛА
         channel_best = {}
         for p in all_photos:
             ch = p['channel']
@@ -498,6 +502,7 @@ def pick_most_important(candidates):
 - Новости про шоу-бизнес, актеров, концерты, визиты чиновников и скучные совещания.
 - Любые спортивные новости (футбол, хоккей, матчи, счета, стадионы, команды, тренеры, болельщики).
 - Милые новости про животных (котята, собаки, барсы, тигры), природу, заповедники, зоопарки и туризм.
+- Личные приветствия авторов ("Доброе утро", "Всем привет") и посты без новостного инфоповода.
 
 Выбирай ТОЛЬКО жесткие новости, содержащие экшн: СВО, криминал, ДТП, катастрофы, пожары, политические конфликты.
 
@@ -544,6 +549,7 @@ def rewrite_with_ai(title, summary, channel_name=""):
 6. Удали упоминания других каналов, авторов и ссылки на Telegram.
 7. {city_instruction}
 8. Запрещено использовать любые эмодзи, смайлики и графические символы.
+9. 🆕 КРИТИЧЕСКИ ВАЖНО: Если текст является просто приветствием ("Доброе утро", "Всем привет"), личным мнением автора, философским размышлением или не содержит конкретного новостного события, верни пустую строку. 
 
 ФОРМАТ ОТВЕТА:
 Только готовый пост (заголовок + текст), без твоих комментариев.
@@ -554,9 +560,8 @@ def rewrite_with_ai(title, summary, channel_name=""):
     raw_text = call_groq(prompt)
     
     if not raw_text:
-        print("⚠️ ИИ вернул пустоту. Используем оригинальный текст.")
-        clean_summary = summary.strip()
-        raw_text = f"<b>Срочные новости</b>\n\n{clean_summary}"
+        print("⚠️ ИИ вернул пустоту (возможно, это было приветствие или не-новость). Пропускаем.")
+        return None
         
     raw_text = re.sub(r'^(Category|Рубрика|Категория):.*?\n', '', raw_text, flags=re.IGNORECASE)
     raw_text = re.sub(r'</b>\s*', '</b>\n\n', raw_text)
@@ -1013,7 +1018,7 @@ def main():
             post_body = rewrite_with_ai(best_news['title'], best_news['summary'], best_news.get('channel', ''))
             
             if post_body is None:
-                print("❌ Новость отклонена ИИ (возможно, мем или шутка). Пропускаем запуск.")
+                print("❌ Новость отклонена ИИ (возможно, мем или приветствие). Пропускаем запуск.")
                 sys.exit(0)
 
             print(f"Сгенерированный текст:\n{post_body}\n")
