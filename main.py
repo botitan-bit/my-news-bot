@@ -227,7 +227,7 @@ def get_tg_web_photos(channel_name, now):
                 
             age_hours = (now - pub_date).total_seconds() / 3600
             
-            if age_hours > 18:
+            if age_hours > 24:
                 count_too_old += 1
                 continue
             
@@ -285,7 +285,7 @@ def get_tg_web_photos(channel_name, now):
             })
         
         if len(photos) == 0:
-            print(f"  [{channel_name}] С фото: {count_photo_tags} | Реклама/Мусор: {count_blacklisted} | Старше 18ч: {count_too_old} | Дубли: {count_duplicate}")
+            print(f"  [{channel_name}] С фото: {count_photo_tags} | Реклама/Мусор: {count_blacklisted} | Старше 24ч: {count_too_old} | Дубли: {count_duplicate}")
         
     except Exception as e:
         print(f"Ошибка парсинга фото {channel_name}: {e}")
@@ -332,7 +332,7 @@ def get_tg_web_videos(channel_name, now):
                 
             age_hours = (now - pub_date).total_seconds() / 3600
             
-            if age_hours > 18:
+            if age_hours > 24:
                 count_too_old += 1
                 continue
             
@@ -410,7 +410,7 @@ def get_tg_web_videos(channel_name, now):
             })
         
         if len(videos) == 0:
-            print(f"  [{channel_name}] С видео: {count_video_tags} | Реклама/Мусор: {count_blacklisted} | Старше 18ч: {count_too_old} | Дубли: {count_duplicate}")
+            print(f"  [{channel_name}] С видео: {count_video_tags} | Реклама/Мусор: {count_blacklisted} | Старше 24ч: {count_too_old} | Дубли: {count_duplicate}")
         
     except Exception as e:
         print(f"Ошибка парсинга {channel_name}: {e}")
@@ -491,43 +491,6 @@ def call_groq(prompt):
         print(f"⚠️ Ошибка Groq: {e}")
         return ""
 
-def pick_most_important(candidates):
-    if not candidates: return None
-    
-    titles_list = "\n".join([f"{i}. {c['title']}" for i, c in enumerate(candidates)])
-    
-    recent_titles = get_recent_titles()
-    history_text = ""
-    if recent_titles:
-        history_text = "УЖЕ ОПУБЛИКОВАНО РАНЕЕ:\n" + "\n".join(recent_titles) + "\n"
-    
-    prompt = f"""Ты — редактор жесткого новостного канала. 
-Выбери ОДИН самый интересный заголовок из списка.
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выбирать:
-- Новости про шоу-бизнес, актеров, концерты, визиты чиновников и скучные совещания.
-- Любые спортивные новости (футбол, хоккей, матчи, счета, стадионы, команды, тренеры, болельщики).
-- Милые новости про животных (котята, собаки, барсы, тигры), природу, заповедники, зоопарки и туризм.
-- Личные приветствия авторов ("Доброе утро", "Всем привет").
-
-Выбирай ТОЛЬКО жесткие новости, содержащие экшн: СВО, криминал, ДТП, катастрофы, пожары, политические конфликты. (Юмор и мемы допустимы, если они содержат событие).
-
-{history_text}
-
-Ответь ТОЛЬКО цифрой (от 0 до {len(candidates)-1}). Не пиши никаких слов, только цифру.
-
-Список:
-{titles_list}"""
-    
-    answer = call_groq(prompt)
-    
-    if answer:
-        match = re.search(r'\d+', answer)
-        if match:
-            idx = int(match.group())
-            if 0 <= idx < len(candidates): return candidates[idx]
-            
-    return candidates[0]
-
 def sanitize_html(text):
     text = text.replace('<b>', '||BOLD_START||').replace('</b>', '||BOLD_END||')
     text = html.escape(text)
@@ -554,7 +517,7 @@ def rewrite_with_ai(title, summary, channel_name=""):
 6. Удали упоминания других каналов, авторов и ссылки на Telegram.
 7. {city_instruction}
 8. Запрещено использовать любые эмодзи, смайлики и графические символы.
-9. 🆕 КРИТИЧЕСКИ ВАЖНО: Если текст является ИСКЛЮЧИТЕЛЬНО приветствием ("Доброе утро", "Всем привет"), личным обращением к подписчикам или не содержит никакого события/смысла, верни ПУСТУЮ СТРОКУ. Если это мем или шутка с каким-то событием — оформи как обычно.
+9. 🆕 КРИТИЧЕСКИ ВАЖНО: Отклоняй (возвращай пустую строку) ТОЛЬКО если текст состоит ИСКЛЮЧИТЕЛЬНО из утреннего приветствия (например, "Доброе утро", "Всем привет", "Хорошего дня") или пустой рекламы. Во ВСЕХ остальных случаях (даже если это короткий мем, шутка, обрывок фразы или странный текст) — ОБЯЗАТЕЛЬНО оформи его: придумай заголовок и выведи текст.
 
 ФОРМАТ ОТВЕТА:
 Только готовый пост (заголовок + текст), без твоих комментариев.
@@ -565,7 +528,7 @@ def rewrite_with_ai(title, summary, channel_name=""):
     raw_text = call_groq(prompt)
     
     if not raw_text:
-        print("⚠️ ИИ вернул пустоту (возможно, это было приветствие или не-новость). Пропускаем.")
+        print("⚠️ ИИ вернул пустоту (это было чистое приветствие). Пропускаем.")
         return None
         
     raw_text = re.sub(r'^(Category|Рубрика|Категория):.*?\n', '', raw_text, flags=re.IGNORECASE)
