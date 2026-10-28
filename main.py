@@ -258,7 +258,7 @@ def get_tg_web_photos(channel_name, now):
                 continue
             
             clean_text = text_tag.get_text("\n", strip=True)
-            if len(clean_text) < 20:
+            if len(clean_text) < 40:  # 🆕 Увеличили с 20 до 40 символов
                 continue
             
             text_hash = get_text_hash(clean_text)
@@ -380,7 +380,7 @@ def get_tg_web_videos(channel_name, now):
                 continue
             
             clean_text = text_tag.get_text("\n", strip=True)
-            if len(clean_text) < 20:
+            if len(clean_text) < 40:  # 🆕 Увеличили с 20 до 40 символов
                 continue
             
             text_hash = get_text_hash(clean_text)
@@ -517,7 +517,7 @@ def rewrite_with_ai(title, summary, channel_name=""):
 6. Удали упоминания других каналов, авторов и ссылки на Telegram.
 7. {city_instruction}
 8. Запрещено использовать любые эмодзи, смайлики и графические символы.
-9. 🆕 КРИТИЧЕСКИ ВАЖНО: Отклоняй (возвращай пустую строку) ТОЛЬКО если текст состоит ИСКЛЮЧИТЕЛЬНО из утреннего приветствия (например, "Доброе утро", "Всем привет", "Хорошего дня") или пустой рекламы. Во ВСЕХ остальных случаях (даже если это короткий мем, шутка, обрывок фразы или странный текст) — ОБЯЗАТЕЛЬНО оформи его: придумай заголовок и выведи текст.
+9. 🆕 КРИТИЧЕСКИ ВАЖНО: Отклоняй (возвращай пустую строку) ТОЛЬКО если текст состоит ИСКЛЮЧИТЕЛЬНО из утреннего приветствия (например, "Доброе утро", "Всем привет", "Хорошего дня"). Если это мем, шутка или обрывок фразы, но в нём есть хоть какой-то смысл — оформи его. Если текста слишком мало для поста, тоже верни пустую строку.
 
 ФОРМАТ ОТВЕТА:
 Только готовый пост (заголовок + текст), без твоих комментариев.
@@ -528,7 +528,7 @@ def rewrite_with_ai(title, summary, channel_name=""):
     raw_text = call_groq(prompt)
     
     if not raw_text:
-        print("⚠️ ИИ вернул пустоту (это было чистое приветствие). Пропускаем.")
+        print("⚠️ ИИ вернул пустоту (это было чистое приветствие или пустышка). Пропускаем.")
         return None
         
     raw_text = re.sub(r'^(Category|Рубрика|Категория):.*?\n', '', raw_text, flags=re.IGNORECASE)
@@ -547,7 +547,9 @@ def rewrite_with_ai(title, summary, channel_name=""):
 
     plain_body = re.sub(r'<[^>]+>', '', raw_text)
     
-    if len(plain_body.strip()) < 20:
+    # 🆕 Проверяем, что после удаления заголовка остался хоть какой-то текст
+    if len(plain_body.strip()) < 30:
+         print("⚠️ После заголовка не осталось текста. Пропускаем.")
          return None
 
     return sanitize_html(raw_text)
@@ -983,7 +985,7 @@ def main():
             post_body = rewrite_with_ai(candidate['title'], candidate['summary'], candidate.get('channel', ''))
             
             if post_body is None:
-                print("❌ Кандидат отклонен ИИ (возможно, приветствие). Пробуем следующего...")
+                print("❌ Кандидат отклонен ИИ (возможно, приветствие или пустышка). Пробуем следующего...")
                 continue 
 
             print(f"✅ Выбрана и обработана новость: {candidate['title']} (из канала {candidate.get('channel', 'неизвестно')})")
@@ -1001,14 +1003,15 @@ def main():
                 max_result = send_to_max(post_body, candidate['media_type'], candidate['media_url'])
                 print(f"MAX: {'OK' if max_result else 'FAIL'}")
                 
-                print("\nЗапускаем отправку в ВК...")
-                vk_result = send_to_vk(post_body, candidate['media_type'], candidate['media_url'])
-                print(f"ВКонтакте: {'OK' if vk_result else 'FAIL'}")
+                # 🆕 ВРЕМЕННО ОТКЛЮЧАЕМ ВК
+                print("\nВКонтакте временно отключен (Flood control).")
+                # vk_result = send_to_vk(post_body, candidate['media_type'], candidate['media_url'])
+                # print(f"ВКонтакте: {'OK' if vk_result else 'FAIL'}")
                 
                 print(f"\n🎉 Готово! Бот успешно отработал.")
                 return
         
-        print("\n❌ Все кандидаты отклонены ИИ (приветствия/мусор). Пропускаем запуск.")
+        print("\n❌ Все кандидаты отклонены ИИ (приветствия/пустышки). Пропускаем запуск.")
     else:
         print("\n❌ Не удалось найти ни видео, ни фото. Пропускаем запуск.")
         
