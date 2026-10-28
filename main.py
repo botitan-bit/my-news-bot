@@ -54,7 +54,6 @@ RSS_FEEDS = [
 SIGNATURE_TG = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
 SIGNATURE_MAX = '**[ПЕРВЫЕ НОВОСТИ](https://max.ru/channel_pervonovosti)**'
 
-# 🆕 Правило для Казани удалено, так как канал SHOCKkzn убран из поиска
 LOCAL_CHANNELS = {}
 
 BLACKLIST_WORDS = [
@@ -415,7 +414,6 @@ def get_tg_web_videos(channel_name, now):
 def get_news_candidates():
     now = datetime.now(timezone.utc)
     
-    # 🆕 НОВЫЙ СПИСОК КАНАЛОВ
     tg_channels = [
         "ragulaku",
         "pilachzx",
@@ -426,26 +424,42 @@ def get_news_candidates():
     ]
     
     print(f"  -> Ищем видео в веб-версиях Telegram-каналов...")
-    tg_videos = []
+    all_videos = []
     for ch in tg_channels:
         vids = get_tg_web_videos(ch, now)
-        tg_videos.extend(vids)
+        all_videos.extend(vids)
         
-    if tg_videos:
-        tg_videos = sorted(tg_videos, key=lambda x: x['age_hours'])
-        print(f"🔥 Найдено {len(tg_videos)} ВИДЕО без рекламы! Берем самые свежие.")
-        return tg_videos[:5]
+    if all_videos:
+        # 🆕 БЕРЕМ ПО 1 САМОМУ СВЕЖЕМУ ВИДЕО С КАЖДОГО КАНАЛА
+        channel_best = {}
+        for v in all_videos:
+            ch = v['channel']
+            if ch not in channel_best or v['age_hours'] < channel_best[ch]['age_hours']:
+                channel_best[ch] = v
+        
+        candidates = list(channel_best.values())
+        candidates = sorted(candidates, key=lambda x: x['age_hours'])
+        print(f"🔥 Найдено {len(candidates)} ВИДЕО (по 1 с каждого канала)! Берем самые свежие.")
+        return candidates[:5]
 
     print("  ❌ Видео не найдено. Переключаемся на поиск ФОТО...")
-    tg_photos = []
+    all_photos = []
     for ch in tg_channels:
         pics = get_tg_web_photos(ch, now)
-        tg_photos.extend(pics)
+        all_photos.extend(pics)
         
-    if tg_photos:
-        tg_photos = sorted(tg_photos, key=lambda x: x['age_hours'])
-        print(f"🔥 Найдено {len(tg_photos)} ФОТО без рекламы! Берем самые свежие.")
-        return tg_photos[:5]
+    if all_photos:
+        # 🆕 БЕРЕМ ПО 1 САМОМУ СВЕЖЕМУ ФОТО С КАЖДОГО КАНАЛА
+        channel_best = {}
+        for p in all_photos:
+            ch = p['channel']
+            if ch not in channel_best or p['age_hours'] < channel_best[ch]['age_hours']:
+                channel_best[ch] = p
+                
+        candidates = list(channel_best.values())
+        candidates = sorted(candidates, key=lambda x: x['age_hours'])
+        print(f"🔥 Найдено {len(candidates)} ФОТО (по 1 с каждого канала)! Берем самые свежие.")
+        return candidates[:5]
 
     print("  ❌ Ни видео, ни фото не найдено. Пропускаем запуск.")
     return []
