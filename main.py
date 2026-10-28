@@ -57,7 +57,7 @@ SIGNATURE_MAX = '**[ПЕРВЫЕ НОВОСТИ](https://max.ru/channel_pervonov
 LOCAL_CHANNELS = {}
 
 BLACKLIST_WORDS = [
-    # 🆕 ПРИВЕТСТВИЯ И ЛИЧНЫЕ ОБРАЩЕНИЯ
+    # ПРИВЕТСТВИЯ И ЛИЧНЫЕ ОБРАЩЕНИЯ (мемы оставляем)
     "доброе утро", "добрый день", "добрый вечер", "доброй ночи", "всем привет", 
     "приветствую", "друзья", "подписчики", "дорогие", "хорошего дня", "хорошего настроения",
     "отличного дня", "продуктивного дня", "с богом", "берегите себя", "с праздником",
@@ -92,8 +92,7 @@ BLACKLIST_WORDS = [
     "визит", "совещание", "рабочая поездка", "подписал", "вручил", "обсудил", "поздравил", "открыл", "посетил", "заявление", "пресс-конференция", "круглый стол",
     "трамп", "байден", "зеленский", "сша", "америк", "белый дом", "конгресс сша",
     "айфон", "iphone", "смартфон", "гаджет", "дуо", "duo",
-    "макаревич", "нетаньяху", "израил", "палестин", "сионизм", "бен-гвир", "бенгвир", "смотрич",
-    "в детстве", "раньше было", "а помните", "прикол", "анекдот", "смешно", "шутка", "мем"
+    "макаревич", "нетаньяху", "израил", "палестин", "сионизм", "бен-гвир", "бенгвир", "смотрич"
 ]
 
 def ensure_state_files_exist():
@@ -436,16 +435,19 @@ def get_news_candidates():
         all_videos.extend(vids)
         
     if all_videos:
-        channel_best = {}
+        all_videos = sorted(all_videos, key=lambda x: x['age_hours'])
+        candidates = []
+        channel_counts = {}
         for v in all_videos:
             ch = v['channel']
-            if ch not in channel_best or v['age_hours'] < channel_best[ch]['age_hours']:
-                channel_best[ch] = v
-        
-        candidates = list(channel_best.values())
-        candidates = sorted(candidates, key=lambda x: x['age_hours'])
-        print(f"🔥 Найдено {len(candidates)} ВИДЕО (по 1 с каждого канала)! Берем самые свежие.")
-        return candidates[:5]
+            if channel_counts.get(ch, 0) < 2:
+                candidates.append(v)
+                channel_counts[ch] = channel_counts.get(ch, 0) + 1
+            if len(candidates) >= 10:
+                break
+                
+        print(f"🔥 Найдено {len(candidates)} ВИДЕО (с учетом разнообразия)! Берем самые свежие.")
+        return candidates
 
     print("  ❌ Видео не найдено. Переключаемся на поиск ФОТО...")
     all_photos = []
@@ -454,16 +456,19 @@ def get_news_candidates():
         all_photos.extend(pics)
         
     if all_photos:
-        channel_best = {}
+        all_photos = sorted(all_photos, key=lambda x: x['age_hours'])
+        candidates = []
+        channel_counts = {}
         for p in all_photos:
             ch = p['channel']
-            if ch not in channel_best or p['age_hours'] < channel_best[ch]['age_hours']:
-                channel_best[ch] = p
+            if channel_counts.get(ch, 0) < 2:
+                candidates.append(p)
+                channel_counts[ch] = channel_counts.get(ch, 0) + 1
+            if len(candidates) >= 10:
+                break
                 
-        candidates = list(channel_best.values())
-        candidates = sorted(candidates, key=lambda x: x['age_hours'])
-        print(f"🔥 Найдено {len(candidates)} ФОТО (по 1 с каждого канала)! Берем самые свежие.")
-        return candidates[:5]
+        print(f"🔥 Найдено {len(candidates)} ФОТО (с учетом разнообразия)! Берем самые свежие.")
+        return candidates
 
     print("  ❌ Ни видео, ни фото не найдено. Пропускаем запуск.")
     return []
@@ -502,9 +507,9 @@ def pick_most_important(candidates):
 - Новости про шоу-бизнес, актеров, концерты, визиты чиновников и скучные совещания.
 - Любые спортивные новости (футбол, хоккей, матчи, счета, стадионы, команды, тренеры, болельщики).
 - Милые новости про животных (котята, собаки, барсы, тигры), природу, заповедники, зоопарки и туризм.
-- Личные приветствия авторов ("Доброе утро", "Всем привет") и посты без новостного инфоповода.
+- Личные приветствия авторов ("Доброе утро", "Всем привет").
 
-Выбирай ТОЛЬКО жесткие новости, содержащие экшн: СВО, криминал, ДТП, катастрофы, пожары, политические конфликты.
+Выбирай ТОЛЬКО жесткие новости, содержащие экшн: СВО, криминал, ДТП, катастрофы, пожары, политические конфликты. (Юмор и мемы допустимы, если они содержат событие).
 
 {history_text}
 
@@ -539,17 +544,17 @@ def rewrite_with_ai(title, summary, channel_name=""):
     else:
         city_instruction = 'Не добавляй города, если их нет в исходном тексте.'
 
-    prompt = f"""Ты — строгий редактор. Твоя задача — оформить новость, НЕ МЕНЯЯ ТЕКСТ И ФАКТЫ.
+    prompt = f"""Ты — строгий редактор. Твоя задача — оформить новость.
 Выполняй ТОЛЬКО эти правила:
-1. Ничего не переписывай, не меняй формулировки, не добавляй от себя. Оставь исходный текст практически без изменений.
+1. Не меняй смысл и факты. Оставь текст практически без изменений.
 2. Удали только явные оскорбления, нецензурную брань, призывы к насилию или экстремизму. Если их нет — ничего не трогай.
-3. Если исходный текст очень длинный (больше 800 символов), сократи его, оставив только самую суть (краткое изложение).
+3. Если исходный текст очень длинный (больше 800 символов), сократи его, оставив только самую суть.
 4. Сверху добавь жирный заголовок (максимум 80 символов), отражающий суть, выдели его тегом <b>...</b>.
 5. После заголовка сделай ДВА переноса строки и выведи основной текст.
 6. Удали упоминания других каналов, авторов и ссылки на Telegram.
 7. {city_instruction}
 8. Запрещено использовать любые эмодзи, смайлики и графические символы.
-9. 🆕 КРИТИЧЕСКИ ВАЖНО: Если текст является просто приветствием ("Доброе утро", "Всем привет"), личным мнением автора, философским размышлением или не содержит конкретного новостного события, верни пустую строку. 
+9. 🆕 КРИТИЧЕСКИ ВАЖНО: Если текст является ИСКЛЮЧИТЕЛЬНО приветствием ("Доброе утро", "Всем привет"), личным обращением к подписчикам или не содержит никакого события/смысла, верни ПУСТУЮ СТРОКУ. Если это мем или шутка с каким-то событием — оформи как обычно.
 
 ФОРМАТ ОТВЕТА:
 Только готовый пост (заголовок + текст), без твоих комментариев.
@@ -1010,41 +1015,40 @@ def main():
     candidates = get_news_candidates()
     
     if candidates:
-        print(f"Отправляем {len(candidates)} кандидатов на оценку ИИ...")
-        best_news = pick_most_important(candidates)
-        
-        if best_news:
-            print(f"✅ Выбрана новость: {best_news['title']} (из канала {best_news.get('channel', 'неизвестно')})")
-            post_body = rewrite_with_ai(best_news['title'], best_news['summary'], best_news.get('channel', ''))
+        for candidate in candidates:
+            print(f"\nОтправляем кандидата на оценку ИИ: {candidate['title']}")
+            post_body = rewrite_with_ai(candidate['title'], candidate['summary'], candidate.get('channel', ''))
             
             if post_body is None:
-                print("❌ Новость отклонена ИИ (возможно, мем или приветствие). Пропускаем запуск.")
-                sys.exit(0)
+                print("❌ Кандидат отклонен ИИ (возможно, приветствие). Пробуем следующего...")
+                continue 
 
+            print(f"✅ Выбрана и обработана новость: {candidate['title']} (из канала {candidate.get('channel', 'неизвестно')})")
             print(f"Сгенерированный текст:\n{post_body}\n")
             
-            tg_success = send_to_telegram(post_body, best_news['media_type'], best_news['media_url'])
+            tg_success = send_to_telegram(post_body, candidate['media_type'], candidate['media_url'])
             print(f"Telegram: {'OK' if tg_success else 'FAIL'}")
             
             if tg_success:
-                save_posted_link(best_news['link'])
-                save_published_title(best_news['title'])
-                save_posted_hash(best_news['text_hash'])
+                save_posted_link(candidate['link'])
+                save_published_title(candidate['title'])
+                save_posted_hash(candidate['text_hash'])
                 
                 print("\nЗапускаем отправку в MAX...")
-                max_result = send_to_max(post_body, best_news['media_type'], best_news['media_url'])
+                max_result = send_to_max(post_body, candidate['media_type'], candidate['media_url'])
                 print(f"MAX: {'OK' if max_result else 'FAIL'}")
                 
                 print("\nЗапускаем отправку в ВК...")
-                vk_result = send_to_vk(post_body, best_news['media_type'], best_news['media_url'])
+                vk_result = send_to_vk(post_body, candidate['media_type'], candidate['media_url'])
                 print(f"ВКонтакте: {'OK' if vk_result else 'FAIL'}")
                 
                 print(f"\n🎉 Готово! Бот успешно отработал.")
                 return
-        else:
-             print("ИИ отклонил всех кандидатов.")
-
-    print("\n❌ Не удалось найти ни видео, ни фото. Пропускаем запуск.")
+        
+        print("\n❌ Все кандидаты отклонены ИИ (приветствия/мусор). Пропускаем запуск.")
+    else:
+        print("\n❌ Не удалось найти ни видео, ни фото. Пропускаем запуск.")
+        
     sys.exit(0)
 
 if __name__ == "__main__":
