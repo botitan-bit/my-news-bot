@@ -20,6 +20,7 @@ from vk_api.upload import VkUpload
 sys.stdout.reconfigure(line_buffering=True)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# --- Ключи ---
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
@@ -52,7 +53,7 @@ NK_RSS_FEEDS = [
     "https://ria.ru/export/rss2/archive/index.xml",
 ]
 
-# 🆕 Только рекламные слова
+# Только рекламные слова
 AD_WORDS = [
     "реклама", "промокод", "скидка", "erid", "маркировка",
     "казино", "ставки", "криптовалюта", "инвестиции", "заработок",
@@ -70,25 +71,28 @@ def ensure_state_files_exist():
         if not os.path.exists(file):
             open(file, 'a').close()
 
+# --- Дедупликация ---
 def get_text_hash(text):
     clean = re.sub(r'[^\w\s]', '', text.lower())
-    words = clean.split()
-    long_words = [w for w in words if len(w) > 4]
-    long_words.sort()
-    return " ".join(long_words[:20])
+    words = sorted(set([w for w in clean.split() if len(w) > 4]))
+    return " ".join(words[:30])
 
 def is_duplicate_text(text, hashes):
-    new_words = set([w for w in re.sub(r'[^\w\s]', '', text.lower()).split() if len(w) > 4])
-    if not new_words: return False
-    for old in hashes[-150:]:
+    clean = re.sub(r'[^\w\s]', '', text.lower())
+    new_words = set(sorted(set([w for w in clean.split() if len(w) > 4]))[:30])
+    if not new_words:
+        return False
+    for old in hashes[-200:]:
         old_words = set(old.split())
-        if not old_words: continue
+        if not old_words:
+            continue
         inter = new_words.intersection(old_words)
         union = new_words.union(old_words)
-        if len(union) > 0 and (len(inter) / len(union)) > 0.5:
+        if len(union) > 0 and (len(inter) / len(union)) > 0.4:
             return True
     return False
 
+# --- Файловые хелперы ---
 def load_lines(fn):
     if os.path.exists(fn):
         with open(fn, "r", encoding="utf-8") as f:
@@ -117,6 +121,7 @@ def save_published_title(t):
         with open("published_titles.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(titles[-15:]) + "\n")
 
+# NK хелперы
 def get_posted_nk_hashes(): return load_lines("posted_nk_hashes.txt")
 def save_posted_nk_hash(h): append_line("posted_nk_hashes.txt", h)
 def get_posted_nk_photos(): return load_lines("posted_nk_images.txt")
@@ -130,7 +135,7 @@ def save_nk_published_title(t):
         with open("published_nk_titles.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(titles[-15:]) + "\n")
 
-# 🆕 Проверка только на рекламу
+# --- Проверка на рекламу ---
 def is_ad_with_reason(text):
     lower = text.lower()
     for w in AD_WORDS:
@@ -142,6 +147,7 @@ def is_ad_with_reason(text):
 def is_ad(text):
     return is_ad_with_reason(text) is not None
 
+# --- Извлечение прямых ссылок на видео ---
 def extract_direct_video_url(url):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
@@ -173,6 +179,7 @@ def extract_direct_video_url(url):
         print(f"  ⚠️ extract_direct_video_url: {e}")
     return None
 
+# --- Новокузнецк ---
 def get_novokuznetsk_candidates():
     now = datetime.now(timezone.utc)
     keywords = ["новокузнецк", "кузбасс", "кемерово"]
@@ -194,6 +201,7 @@ def get_novokuznetsk_candidates():
                     pub_date = datetime(*entry.updated_parsed[:6], tzinfo=timezone.utc)
                 age_hours = (now - pub_date).total_seconds() / 3600
                 if age_hours > 24: continue
+                
                 media_url = None
                 media_type = None
                 if 'media_content' in entry:
@@ -223,12 +231,14 @@ def get_novokuznetsk_candidates():
                     if img and img.get('src'):
                         media_url = img['src']; media_type = 'photo'
                 if not media_url: continue
+                
                 clean_text = BeautifulSoup(summary, 'html.parser').get_text(separator='\n', strip=True)
                 if len(clean_text) < 20: continue
                 if media_url in posted_photos: continue
                 th = get_text_hash(clean_text)
                 if is_duplicate_text(clean_text, posted_hashes): continue
                 if is_ad(clean_text): continue
+                
                 candidates.append({
                     'title': title, 'summary': clean_text, 'age_hours': age_hours,
                     'media_type': media_type, 'media_url': media_url,
@@ -244,6 +254,7 @@ def get_novokuznetsk_candidates():
         unique.append(c)
     return unique
 
+# --- Обработка видео ---
 def process_video(video_bytes):
     if video_bytes.startswith(b'<!DOCTYPE html>') or b'<html' in video_bytes[:1000]:
         print("  ❌ HTML вместо видео. Пропускаем обработку.")
@@ -286,6 +297,7 @@ def process_video(video_bytes):
         for p in [tin_path, tout, tthumb]:
             if 'p' in locals() and os.path.exists(p): os.remove(p)
 
+# --- Отправка в Telegram ---
 def send_video(video_url, caption, chat_id):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
     direct_url = extract_direct_video_url(video_url)
@@ -354,6 +366,7 @@ def send_to_telegram(text, media_type, media_url, channel_id=None, signature=Non
         return send_photo(media_url, full_text, channel_id)
     return False
 
+# --- Отправка в MAX ---
 def send_to_max(text, media_type, media_url, channel_id=None, signature=None):
     if channel_id is None: channel_id = MAX_CHANNEL_ID
     if signature is None: signature = SIGNATURE_MAX
@@ -364,6 +377,7 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None):
     clean_text = f"{clean_text}\n\n{signature}"
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     attachments = []
+    
     try:
         if media_type == 'video':
             direct_url = extract_direct_video_url(media_url)
@@ -399,6 +413,7 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None):
                 attachments.append({"type": "video", "payload": {"token": ud["token"]}})
             else:
                 return False
+                
         elif media_type == 'photo':
             dl = {'User-Agent': 'Mozilla/5.0'}
             pr = requests.get(media_url, headers=dl, timeout=60, allow_redirects=True)
@@ -435,8 +450,10 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None):
     except Exception as e:
         print(f"  ⚠️ Ошибка медиа MAX: {e}")
         return False
+        
     if not attachments:
         return False
+        
     payload = {"text": clean_text, "format": "markdown", "attachments": attachments}
     for attempt in range(3):
         try:
@@ -458,6 +475,7 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None):
             time.sleep(10)
     return False
 
+# --- Основной парсинг TG ---
 def get_tg_web_videos(channel_name, now):
     videos = []
     posted_videos = get_posted_videos()
@@ -528,7 +546,8 @@ def get_tg_web_videos(channel_name, now):
 
 def get_news_candidates():
     now = datetime.now(timezone.utc)
-    channels = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi"]
+    # 🆕 Добавлен канал zhest_na_dorogah
+    channels = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi", "zhest_na_dorogah"]
     print("  -> Ищем видео в Telegram-каналах...")
     all_v = []
     for ch in channels:
@@ -537,17 +556,24 @@ def get_news_candidates():
         all_v.sort(key=lambda x: x['age_hours'])
         out = []
         counts = {}
+        batch_hashes = []
         for v in all_v:
             ch = v['channel']
-            if counts.get(ch, 0) < 2:
-                out.append(v)
-                counts[ch] = counts.get(ch, 0) + 1
+            if counts.get(ch, 0) >= 2:
+                continue
+            if is_duplicate_text(v['summary'], batch_hashes):
+                print(f"    (дубль внутри батча: {v['channel']} — {v['title'][:40]})")
+                continue
+            batch_hashes.append(v['text_hash'])
+            out.append(v)
+            counts[ch] = counts.get(ch, 0) + 1
             if len(out) >= 10: break
         print(f"🔥 Найдено {len(out)} ВИДЕО.")
         return out
     print("  ❌ Видео не найдено.")
     return []
 
+# --- ИИ ---
 def call_groq(prompt):
     if not GROQ_API_KEY: return ""
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -608,6 +634,7 @@ def rewrite_with_ai(title, summary, channel_name=""):
         return None
     return sanitize_html(raw)
 
+# --- Процесс Новокузнецка ---
 def process_novokuznetsk():
     if not TG_NK_CHANNEL_ID and not MAX_NK_CHANNEL_ID:
         print("Новокузнецк: ID каналов не заданы.")
@@ -644,13 +671,17 @@ def process_novokuznetsk():
         else:
             print("Новокузнецк: медиа не ушло, пробуем следующего.")
 
+# --- Main ---
 def main():
     ensure_state_files_exist()
     if not os.path.exists("logo.png"):
         print("⚠️ Файл logo.png не найден.")
+        
     process_novokuznetsk()
+    
     print("\n=== Ищем свежие новости (основной канал) ===")
     cands = get_news_candidates()
+    
     if cands:
         for c in cands:
             print(f"\nКандидат: {c['title']}")
@@ -658,21 +689,27 @@ def main():
             if not body:
                 print("❌ Отклонено ИИ, пробуем следующего.")
                 continue
+                
             print(f"✅ Новость: {c['title']}")
             tg_ok = send_to_telegram(body, c['media_type'], c['media_url'])
             print(f"Telegram: {'OK' if tg_ok else 'FAIL'}")
+            
             if not tg_ok:
                 print("⚠️ Медиа не отправлено в Telegram. Пробуем следующего кандидата.")
                 continue
+                
             save_posted_link(c['link'])
             save_published_title(c['title'])
             save_posted_hash(c['text_hash'])
+            
             print("Запускаем отправку в MAX...")
             max_ok = send_to_max(body, c['media_type'], c['media_url'])
             print(f"MAX: {'OK' if max_ok else 'FAIL'}")
+            
             print("ВКонтакте временно отключен.")
             print("\n🎉 Готово!")
             return
+            
         print("\n❌ Все кандидаты отклонены или медиа не ушло.")
     else:
         print("\n❌ Новостей не найдено.")
