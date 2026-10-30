@@ -20,7 +20,6 @@ from vk_api.upload import VkUpload
 sys.stdout.reconfigure(line_buffering=True)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- Ключи ---
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
@@ -53,34 +52,13 @@ NK_RSS_FEEDS = [
     "https://ria.ru/export/rss2/archive/index.xml",
 ]
 
-BLACKLIST_WORDS = [
-    "доброе утро", "добрый день", "добрый вечер", "доброй ночи", "всем привет",
-    "приветствую", "друзья", "подписчики", "дорогие", "хорошего дня", "хорошего настроения",
-    "отличного дня", "продуктивного дня", "с богом", "берегите себя", "с праздником",
-    "с днем рождения", "напоминаю", "делюсь", "личное мнение", "мысли вслух",
-    "котят", "котенок", "кошка", "кот ", "щенок", "собак", "животн", "зоопарк",
-    "заповедник", "фотоловушк", "барс", "тигр", "лев ", "медвед", "природ",
-    "турист", "путешеств", "заповедн", "нацпарк", "красив", "умилен", "милота",
-    "спорт", "футбол", "хоккей", "баскетбол", "волейбол", "теннис", "бокс", "мма", "ufc",
-    "матч", "турнир", "чемпионат", "олимпиад", "тренер", "стадион", "болельщик", "фанат",
-    "финальный свисток", "забил", "гол ", "очко", "рубин", "крылья советов", "крылышки",
-    "спартак", "зенит", "цска", "динамо", "локомотив", "рфпл", "кхл", "нхл", "лига чемпионов",
-    "гонщик", "гонка", "автоспорт", "клуб", "победа", "поражение", "проиграл", "выиграл",
+# 🆕 Только рекламные слова
+AD_WORDS = [
     "реклама", "промокод", "скидка", "erid", "маркировка",
     "казино", "ставки", "криптовалюта", "инвестиции", "заработок",
     "подписывайтесь", "перейти по ссылке", "спонсор", "распродажа", "бонус",
     "подарок", "бесплатно", "только сегодня", "успей", "торопись", "оформить заказ",
-    "какой сегодня", "какой праздник", "гороскоп", "день рождения", "история дня",
-    "в этот день", "народные приметы", "церковный календарь", "лунный календарь", "именины",
-    "заседание", "законопроект", "бюджет", "форум", "выставка", "конференция", "экономика", "инфляция", "курс валют",
-    "шоу-бизнес", "актер", "актриса", "певец", "певица", "звезда", "сериал", "фильм", "премьера", "инстаграм", "тикток",
-    "спектакль", "ледовый", "фигурист", "авербух", "петросян", "концерт", "развлечение", "шоу", "праздник", "фестиваль", "выступление",
-    "продолжают спецоперацию", "выполняют задачи", "боевая готовность", "полная готовность", "активные действия", "выполняют боевые задачи", "решают задачи", "контроль над ситуацией",
-    "автобус", "маршрутка", "прямой эфир", "прямая трансляция", "смотрите эфир", "ожидается эфир",
-    "визит", "совещание", "рабочая поездка", "подписал", "вручил", "обсудил", "поздравил", "открыл", "посетил", "заявление", "пресс-конференция", "круглый стол",
-    "трамп", "байден", "зеленский", "сша", "америк", "белый дом", "конгресс сша",
-    "айфон", "iphone", "смартфон", "гаджет", "дуо", "duo",
-    "макаревич", "нетаньяху", "израил", "палестин", "сионизм", "бен-гвир", "бенгвир", "смотрич"
+    "заказать", "купить", "магазин", "акция", "промо", "розыгрыш"
 ]
 
 def ensure_state_files_exist():
@@ -152,9 +130,17 @@ def save_nk_published_title(t):
         with open("published_nk_titles.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(titles[-15:]) + "\n")
 
-def is_blacklisted(text):
+# 🆕 Проверка только на рекламу
+def is_ad_with_reason(text):
     lower = text.lower()
-    return any(w in lower for w in BLACKLIST_WORDS)
+    for w in AD_WORDS:
+        pattern = r'(?<![а-яёa-z])' + re.escape(w)
+        if re.search(pattern, lower):
+            return w
+    return None
+
+def is_ad(text):
+    return is_ad_with_reason(text) is not None
 
 def extract_direct_video_url(url):
     headers = {
@@ -193,7 +179,6 @@ def get_novokuznetsk_candidates():
     posted_hashes = get_posted_nk_hashes()
     posted_photos = get_posted_nk_photos()
     candidates = []
-    
     for feed_url in NK_RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
@@ -202,7 +187,6 @@ def get_novokuznetsk_candidates():
                 title = entry.get('title', '')
                 summary = entry.get('summary', '') or entry.get('description', '')
                 if not any(k in f"{title} {summary}".lower() for k in keywords): continue
-                
                 pub_date = now
                 if 'published_parsed' in entry:
                     pub_date = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
@@ -210,7 +194,6 @@ def get_novokuznetsk_candidates():
                     pub_date = datetime(*entry.updated_parsed[:6], tzinfo=timezone.utc)
                 age_hours = (now - pub_date).total_seconds() / 3600
                 if age_hours > 24: continue
-                
                 media_url = None
                 media_type = None
                 if 'media_content' in entry:
@@ -240,14 +223,12 @@ def get_novokuznetsk_candidates():
                     if img and img.get('src'):
                         media_url = img['src']; media_type = 'photo'
                 if not media_url: continue
-                
                 clean_text = BeautifulSoup(summary, 'html.parser').get_text(separator='\n', strip=True)
-                if len(clean_text) < 40: continue
+                if len(clean_text) < 20: continue
                 if media_url in posted_photos: continue
                 th = get_text_hash(clean_text)
                 if is_duplicate_text(clean_text, posted_hashes): continue
-                if is_blacklisted(clean_text): continue
-                
+                if is_ad(clean_text): continue
                 candidates.append({
                     'title': title, 'summary': clean_text, 'age_hours': age_hours,
                     'media_type': media_type, 'media_url': media_url,
@@ -255,7 +236,6 @@ def get_novokuznetsk_candidates():
                 })
         except Exception as e:
             print(f"Ошибка RSS {feed_url}: {e}")
-    
     seen = set()
     unique = []
     for c in candidates:
@@ -368,7 +348,6 @@ def send_to_telegram(text, media_type, media_url, channel_id=None, signature=Non
     if channel_id is None: channel_id = TELEGRAM_CHANNEL_ID
     if signature is None: signature = SIGNATURE_TG
     full_text = f"{text}\n\n{signature}"
-    
     if media_type == 'video' and media_url:
         return send_video(media_url, full_text, channel_id)
     elif media_type == 'photo' and media_url:
@@ -379,16 +358,12 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None):
     if channel_id is None: channel_id = MAX_CHANNEL_ID
     if signature is None: signature = SIGNATURE_MAX
     if not MAX_BOT_TOKEN or not channel_id: return False
-    
-    if media_type not in ('video', 'photo') or not media_url:
-        return False
-    
+    if media_type not in ('video', 'photo') or not media_url: return False
     clean_text = text.replace('<b>', '**').replace('</b>', '**')
     clean_text = html.unescape(clean_text).strip()
     clean_text = f"{clean_text}\n\n{signature}"
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     attachments = []
-    
     try:
         if media_type == 'video':
             direct_url = extract_direct_video_url(media_url)
@@ -406,8 +381,7 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None):
                 print("  ❌ MAX: видео > 250 МБ.")
                 return False
             vdata, _ = process_video(vdata)
-            if vdata is None:
-                return False
+            if vdata is None: return False
             up = requests.post(
                 "https://platform-api2.max.ru/uploads?type=video",
                 headers={"Authorization": MAX_BOT_TOKEN}, timeout=15, verify=False
@@ -425,7 +399,6 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None):
                 attachments.append({"type": "video", "payload": {"token": ud["token"]}})
             else:
                 return False
-        
         elif media_type == 'photo':
             dl = {'User-Agent': 'Mozilla/5.0'}
             pr = requests.get(media_url, headers=dl, timeout=60, allow_redirects=True)
@@ -441,14 +414,12 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None):
                 headers={"Authorization": MAX_BOT_TOKEN}, timeout=15, verify=False
             )
             ud = up.json()
-            if not ud.get("url"):
-                return False
+            if not ud.get("url"): return False
             ur = requests.post(
                 ud["url"], headers={"Authorization": MAX_BOT_TOKEN},
                 files={'data': ('photo.jpg', pr.content, 'image/jpeg')}, timeout=60
             )
-            if ur.status_code not in [200, 201]:
-                return False
+            if ur.status_code not in [200, 201]: return False
             token = None
             try:
                 rj = ur.json()
@@ -459,16 +430,13 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None):
                 elif "token" in rj:
                     token = rj["token"]
             except: pass
-            if not token:
-                return False
+            if not token: return False
             attachments.append({"type": "image", "payload": {"token": token}})
     except Exception as e:
         print(f"  ⚠️ Ошибка медиа MAX: {e}")
         return False
-    
     if not attachments:
         return False
-    
     payload = {"text": clean_text, "format": "markdown", "attachments": attachments}
     for attempt in range(3):
         try:
@@ -498,12 +466,17 @@ def get_tg_web_videos(channel_name, now):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'}
         resp = requests.get(url, timeout=10, headers=headers)
-        if resp.status_code != 200: return []
+        if resp.status_code != 200:
+            print(f"  [{channel_name}] HTTP {resp.status_code}")
+            return []
         soup = BeautifulSoup(resp.text, "html.parser")
         posts = soup.select(".tgme_widget_message[data-post]")
-        if not posts: return []
+        if not posts:
+            print(f"  [{channel_name}] Постов не найдено")
+            return []
         print(f"  [{channel_name}] Найдено постов: {len(posts)}")
-        c_v = c_b = c_old = c_dup = 0
+        c_v = c_ad = c_old = c_dup = 0
+        reasons = {}
         for post in reversed(posts):
             tt = post.select_one(".tgme_widget_message_date time")
             if not tt: continue
@@ -530,27 +503,31 @@ def get_tg_web_videos(channel_name, now):
             txt = post.select_one(".tgme_widget_message_text")
             if not txt: continue
             clean = txt.get_text("\n", strip=True)
-            if len(clean) < 40: continue
+            if len(clean) < 20: continue
             th = get_text_hash(clean)
             if is_duplicate_text(clean, posted_hashes):
                 c_dup += 1; continue
             pid = post.get("data-post", "")
-            if is_blacklisted(clean):
-                c_b += 1; continue
+            reason = is_ad_with_reason(clean)
+            if reason:
+                c_ad += 1
+                reasons[reason] = reasons.get(reason, 0) + 1
+                continue
             videos.append({
                 "title": clean[:60] + "...", "summary": clean, "age_hours": age,
                 "media_type": "video", "media_url": v_url,
                 "link": f"https://t.me/{pid}", "text_hash": th, "channel": channel_name
             })
         if not videos:
-            print(f"  [{channel_name}] Видео: {c_v} | Мусор: {c_b} | Старше 24ч: {c_old} | Дубли: {c_dup}")
+            print(f"  [{channel_name}] Видео: {c_v} | Реклама: {c_ad} | Старше 24ч: {c_old} | Дубли: {c_dup}")
+            if reasons:
+                print(f"    Причины: {reasons}")
     except Exception as e:
         print(f"Ошибка {channel_name}: {e}")
     return videos
 
 def get_news_candidates():
     now = datetime.now(timezone.utc)
-    # 🆕 Убрали ragulaku и pilachzx
     channels = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi"]
     print("  -> Ищем видео в Telegram-каналах...")
     all_v = []
@@ -606,7 +583,7 @@ def rewrite_with_ai(title, summary, channel_name=""):
 6. Удали упоминания каналов и ссылки на Telegram.
 7. {ci}
 8. Запрещены эмодзи.
-9. Если это только приветствие ("Доброе утро") — верни пустую строку.
+9. Оформляй любой текст, даже если это короткая фраза, мем или приветствие. Не отклоняй посты.
 
 ФОРМАТ: только готовый пост.
 
@@ -626,7 +603,7 @@ def rewrite_with_ai(title, summary, channel_name=""):
     raw = re.sub(r'\n{3,}', '\n\n', raw)
     raw = re.sub(r'[^\w\sа-яА-ЯёЁ.,;:!?()\[\]{}<>="\'/\-+#*&%$@|~^]', '', raw)
     plain = re.sub(r'<[^>]+>', '', raw)
-    if len(plain.strip()) < 30:
+    if len(plain.strip()) < 15:
         print("⚠️ После заголовка нет текста.")
         return None
     return sanitize_html(raw)
@@ -671,9 +648,7 @@ def main():
     ensure_state_files_exist()
     if not os.path.exists("logo.png"):
         print("⚠️ Файл logo.png не найден.")
-    
     process_novokuznetsk()
-    
     print("\n=== Ищем свежие новости (основной канал) ===")
     cands = get_news_candidates()
     if cands:
