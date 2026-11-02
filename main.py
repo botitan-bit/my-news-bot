@@ -43,7 +43,6 @@ SIGNATURE_NK_MAX = '**[НОВОКУЗНЕЦК | ПЕРВЫЕ НОВОСТИ](htt
 
 LOCAL_CHANNELS = {"novokuznetsk": "Новокузнецк"}
 
-# Прямые RSS-ленты для Новокузнецка
 NK_RSS_FEEDS = [
     "https://ria.ru/export/rss2/index.xml",
     "https://abnews.ru/feed/tag/kemerovskaya-oblast/",
@@ -52,10 +51,8 @@ NK_RSS_FEEDS = [
     "https://freenewsapi.ai/v1/rss?host=novokuznetsk-news.ru&size=50",
 ]
 
-# Каналы для основного парсинга (включая ДТП)
 TG_CHANNELS = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi", "zhest_na_dorogah"]
 
-# Ключевые слова для Новокузнецка
 NK_KEYWORDS = ["новокузнецк", "кузбасс", "кемерово", "белово", "прокопьевск", "ленинск-кузнецкий", "междуреченск", "мыски", "осинники", "киселевск", "юрга", "анжеро-судженск", "мариинск", "тайга", "гуьевск", "таштагол", "полысаево", "калтан", "березовский", "топки"]
 
 AD_WORDS = [
@@ -70,29 +67,47 @@ def ensure_state_files_exist():
     for file in [
         "last_theme.txt", "posted_news.txt", "published_titles.txt",
         "posted_images.txt", "posted_videos.txt", "posted_hashes.txt",
-        "posted_nk_hashes.txt", "posted_nk_images.txt", "published_nk_titles.txt"
+        "posted_nk_hashes.txt", "posted_nk_images.txt", "posted_nk_videos.txt",
+        "published_nk_titles.txt"
     ]:
         if not os.path.exists(file):
             open(file, 'a').close()
 
-# --- Дедупликация ---
+# --- УСИЛЕННАЯ ДЕДУПЛИКАЦИЯ ---
 def get_text_hash(text):
+    """40 уникальных слов (длиннее 4 символов), отсортированных. 
+    Это отпечаток текста, не зависящий от порядка слов."""
     clean = re.sub(r'[^\w\s]', '', text.lower())
     words = sorted(set([w for w in clean.split() if len(w) > 4]))
-    return " ".join(words[:30])
+    return " ".join(words[:40])
 
 def is_duplicate_text(text, hashes):
+    """Сравнивает текст с историей через коэффициент Жаккара. 
+    Проверяет последние 500 записей (около 3 недель при 1 ч/день)."""
     clean = re.sub(r'[^\w\s]', '', text.lower())
-    new_words = set(sorted(set([w for w in clean.split() if len(w) > 4]))[:30])
+    new_words = set(sorted(set([w for w in clean.split() if len(w) > 4]))[:40])
     if not new_words:
         return False
-    for old in hashes[-200:]:
+    for old in hashes[-500:]:
         old_words = set(old.split())
         if not old_words:
             continue
         inter = new_words.intersection(old_words)
         union = new_words.union(old_words)
         if len(union) > 0 and (len(inter) / len(union)) > 0.4:
+            return True
+    return False
+
+def is_duplicate_title(title, recent_titles):
+    """Проверка по заголовку: если точно совпадает или первые 20 символов совпадают — это повтор."""
+    if not title or len(title) < 15:
+        return False
+    clean = re.sub(r'[^\w\s]', '', title.lower()).strip()
+    for t in recent_titles:
+        clean_t = re.sub(r'[^\w\s]', '', t.lower()).strip()
+        if clean == clean_t:
+            return True
+        if len(clean) >= 20 and len(clean_t) >= 20 and clean[:20] == clean_t[:20]:
             return True
     return False
 
@@ -121,22 +136,25 @@ def get_recent_titles(): return load_lines("published_titles.txt")
 def save_published_title(t):
     append_line("published_titles.txt", t)
     titles = get_recent_titles()
-    if len(titles) > 15:
+    if len(titles) > 50:
         with open("published_titles.txt", "w", encoding="utf-8") as f:
-            f.write("\n".join(titles[-15:]) + "\n")
+            f.write("\n".join(titles[-50:]) + "\n")
 
+# NK хелперы
 def get_posted_nk_hashes(): return load_lines("posted_nk_hashes.txt")
 def save_posted_nk_hash(h): append_line("posted_nk_hashes.txt", h)
 def get_posted_nk_photos(): return load_lines("posted_nk_images.txt")
 def save_posted_nk_photo(u): append_line("posted_nk_images.txt", u)
+def get_posted_nk_videos(): return load_lines("posted_nk_videos.txt")
+def save_posted_nk_video(u): append_line("posted_nk_videos.txt", u)
 def get_recent_nk_titles(): return load_lines("published_nk_titles.txt")
 
 def save_nk_published_title(t):
     append_line("published_nk_titles.txt", t)
     titles = get_recent_nk_titles()
-    if len(titles) > 15:
+    if len(titles) > 50:
         with open("published_nk_titles.txt", "w", encoding="utf-8") as f:
-            f.write("\n".join(titles[-15:]) + "\n")
+            f.write("\n".join(titles[-50:]) + "\n")
 
 # --- Проверка на рекламу ---
 def is_ad_with_reason(text):
@@ -291,14 +309,14 @@ def get_tg_web_photos(channel_name, now):
                 "media_type": "photo", "media_url": p_url,
                 "link": f"https://t.me/{pid}", "text_hash": th, "channel": channel_name
             })
-    except Exception as e:
-        pass
+    except: pass
     return photos
 
 # --- Парсинг RSS для Новокузнецка ---
 def get_novokuznetsk_rss_candidates(now):
     posted_hashes = get_posted_nk_hashes()
     posted_photos = get_posted_nk_photos()
+    posted_videos = get_posted_nk_videos()
     candidates = []
     
     for feed_url in NK_RSS_FEEDS:
@@ -341,9 +359,13 @@ def get_novokuznetsk_rss_candidates(now):
                     if img and img.get('src'): media_url = img['src']; media_type = 'photo'
                 
                 if not media_url: continue
+                
+                # Проверка URL медиа
+                if media_type == 'video' and media_url in posted_videos: continue
+                if media_type == 'photo' and media_url in posted_photos: continue
+                
                 clean_text = BeautifulSoup(summary, 'html.parser').get_text(separator='\n', strip=True)
                 if len(clean_text) < 20: continue
-                if media_url in posted_photos: continue
                 
                 th = get_text_hash(clean_text)
                 if is_duplicate_text(clean_text, posted_hashes): continue
@@ -393,8 +415,8 @@ def process_video(video_bytes):
         for p in [tin_path, tout, tthumb]:
             if 'p' in locals() and os.path.exists(p): os.remove(p)
 
-# --- Отправка ---
-def send_video(video_url, caption, chat_id, is_nk=False):
+# --- Отправка в Telegram ---
+def send_video_tg(video_url, caption, chat_id, is_nk=False):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
     direct_url = extract_direct_video_url(video_url)
     if not direct_url: return False
@@ -411,12 +433,13 @@ def send_video(video_url, caption, chat_id, is_nk=False):
         if thumb_data: files['thumbnail'] = ('thumb.jpg', thumb_data, 'image/jpeg')
         r = requests.post(url, data=data, files=files, timeout=90)
         if r.status_code == 200:
-            if not is_nk: save_posted_video(video_hash)
+            if is_nk: save_posted_nk_video(video_url)
+            else: save_posted_video(video_hash)
             return True
     except: pass
     return False
 
-def send_photo(photo_url, caption, chat_id, is_nk=False):
+def send_photo_tg(photo_url, caption, chat_id, is_nk=False):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     try:
         resp = requests.get(photo_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
@@ -428,7 +451,8 @@ def send_photo(photo_url, caption, chat_id, is_nk=False):
         data = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"}
         r = requests.post(url, data=data, files=files, timeout=60)
         if r.status_code == 200:
-            if not is_nk: save_posted_photo(photo_url)
+            if is_nk: save_posted_nk_photo(photo_url)
+            else: save_posted_photo(photo_url)
             return True
     except: pass
     return False
@@ -437,10 +461,11 @@ def send_to_telegram(text, media_type, media_url, channel_id=None, signature=Non
     if channel_id is None: channel_id = TELEGRAM_CHANNEL_ID
     if signature is None: signature = SIGNATURE_TG
     full_text = f"{text}\n\n{signature}"
-    if media_type == 'video' and media_url: return send_video(media_url, full_text, channel_id, is_nk)
-    elif media_type == 'photo' and media_url: return send_photo(media_url, full_text, channel_id, is_nk)
+    if media_type == 'video' and media_url: return send_video_tg(media_url, full_text, channel_id, is_nk)
+    elif media_type == 'photo' and media_url: return send_photo_tg(media_url, full_text, channel_id, is_nk)
     return False
 
+# --- Отправка в MAX ---
 def send_to_max(text, media_type, media_url, channel_id=None, signature=None):
     if channel_id is None: channel_id = MAX_CHANNEL_ID
     if signature is None: signature = SIGNATURE_MAX
@@ -556,15 +581,25 @@ def process_novokuznetsk(tg_videos, tg_photos):
         
     now = datetime.now(timezone.utc)
     nk_candidates = []
+    posted_nk_videos = get_posted_nk_videos()
+    posted_nk_photos = get_posted_nk_photos()
+    posted_nk_hashes = get_posted_nk_hashes()
+    recent_nk_titles = get_recent_nk_titles()
     
     # 1. Фильтруем ТГ на Новокузнецк
     for v in tg_videos:
         if any(k in v['summary'].lower() for k in NK_KEYWORDS):
+            if v['media_url'] in posted_nk_videos: continue
+            if is_duplicate_text(v['summary'], posted_nk_hashes): continue
+            if is_duplicate_title(v['title'], recent_nk_titles): continue
             v['priority'] = get_nk_priority(v['summary'])
-            v['source_priority'] = 0 # ТГ важнее
+            v['source_priority'] = 0
             nk_candidates.append(v)
     for p in tg_photos:
         if any(k in p['summary'].lower() for k in NK_KEYWORDS):
+            if p['media_url'] in posted_nk_photos: continue
+            if is_duplicate_text(p['summary'], posted_nk_hashes): continue
+            if is_duplicate_title(p['title'], recent_nk_titles): continue
             p['priority'] = get_nk_priority(p['summary'])
             p['source_priority'] = 0
             nk_candidates.append(p)
@@ -605,7 +640,6 @@ def process_novokuznetsk(tg_videos, tg_photos):
         if tg_ok or max_ok:
             save_posted_nk_hash(c['text_hash'])
             save_nk_published_title(c['title'])
-            if c['media_type'] == 'photo': save_posted_nk_photo(c['media_url'])
             return
 
 # --- Основной процесс ---
@@ -639,7 +673,14 @@ def main():
         unique_main.append(c)
         
     posted_hashes = get_posted_hashes()
-    final_candidates = [c for c in unique_main if not is_duplicate_text(c['summary'], posted_hashes)]
+    recent_titles = get_recent_titles()
+    
+    # Финальная проверка на дубли + заголовки
+    final_candidates = []
+    for c in unique_main:
+        if is_duplicate_text(c['summary'], posted_hashes): continue
+        if is_duplicate_title(c['title'], recent_titles): continue
+        final_candidates.append(c)
     
     if final_candidates:
         print(f"🔥 Найдено {len(final_candidates)} кандидатов для основного канала.")
@@ -661,7 +702,7 @@ def main():
             print("\n🎉 Готово!")
             return
     else:
-        print("❌ Для основного канала ничего не найдено.")
+        print("❌ Для основного канала ничего нового не найдено.")
         
     sys.exit(0)
 
