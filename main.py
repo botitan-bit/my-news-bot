@@ -47,16 +47,14 @@ NK_RSS_FEEDS = [
     "https://ria.ru/export/rss2/index.xml",
     "http://www.kuzbassfm.ru/rss/news.xml",
     "https://kemerovo42.info/feed/",
-    "https://www.city-n.ru/rss/news.xml",
-    "https://nk-tv.ru/rss",
-    "https://kuzbassnews.ru/rss",
+    "https://kuzbass-news.ru/feed/",
+    "https://novokuznetsk.su/rss/news.xml",
+    "https://www.kem.kp.ru/rss/",
 ]
 
 TG_CHANNELS = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi", "zhest_na_dorogah"]
 
 NK_KEYWORDS = ["новокузнецк", "кузбасс", "кемерово", "белово", "прокопьевск", "ленинск-кузнецкий", "междуреченск", "мыски", "осинники", "киселевск", "юрга", "анжеро-судженск", "мариинск", "тайга", "гуьевск", "таштагол", "полысаево", "калтан", "березовский", "топки"]
-
-# 🆕 ФИЛЬТР "СКУЧНЫХ" НОВОСТЕЙ УДАЛЕН
 
 AD_WORDS = [
     "реклама", "промокод", "скидка", "erid", "маркировка",
@@ -166,7 +164,7 @@ def is_ad_with_reason(text):
 def is_ad(text):
     return is_ad_with_reason(text) is not None
 
-# --- Извлечение ссылок ---
+# --- Извлечение ссылок и картинок ---
 def extract_direct_video_url(url):
     headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://t.me/'}
     try:
@@ -187,6 +185,33 @@ def extract_direct_video_url(url):
         if matches: return html.unescape(matches[0]).replace('\\/', '/')
         if 't.me/' in url and '?embed' not in url:
             return extract_direct_video_url(url.split('?')[0] + '?embed=1')
+    except: pass
+    return None
+
+# 🆕 ФУНКЦИЯ ДЛЯ ВЫТАСКИВАНИЯ КАРТИНКИ СО СТРАНИЦЫ
+def extract_image_from_url(url):
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    try:
+        resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+        if resp.status_code != 200: return None
+        soup = BeautifulSoup(resp.text, "html.parser")
+        
+        # 1. Ищем og:image (стандарт для новостных сайтов)
+        og_img = soup.select_one('meta[property="og:image"]')
+        if og_img and og_img.get("content"):
+            return og_img.get("content")
+            
+        # 2. Ищем twitter:image
+        tw_img = soup.select_one('meta[name="twitter:image"]')
+        if tw_img and tw_img.get("content"):
+            return tw_img.get("content")
+            
+        # 3. Ищем просто первую большую картинку
+        img_tag = soup.select_one('article img, .post img, .news-item img')
+        if img_tag and img_tag.get("src"):
+            src = img_tag.get("src")
+            if not src.startswith("data:"): # Игнорируем base64 заглушки
+                return src
     except: pass
     return None
 
@@ -310,7 +335,7 @@ def get_tg_web_photos(channel_name, now):
     except: pass
     return photos
 
-# --- Парсинг RSS для Новокузнецка (С ДИАГНОСТИКОЙ) ---
+# --- Парсинг RSS для Новокузнецка (С ВЫТАСКИВАНИЕМ КАРТИНОК) ---
 def get_novokuznetsk_rss_candidates(now):
     posted_hashes = get_posted_nk_hashes()
     posted_photos = get_posted_nk_photos()
@@ -369,6 +394,14 @@ def get_novokuznetsk_rss_candidates(now):
                     soup = BeautifulSoup(summary, 'html.parser')
                     img = soup.find('img')
                     if img and img.get('src'): media_url = img['src']; media_type = 'photo'
+                
+                # 🆕 ЕСЛИ НЕТ МЕДИА В RSS, ИДЕМ НА САЙТ
+                if not media_url and entry.get('link'):
+                    fetched_img = extract_image_from_url(entry.get('link'))
+                    if fetched_img:
+                        media_url = fetched_img
+                        media_type = 'photo'
+                        # print(f"    [Спасено со страницы] {title[:40]}...")
                 
                 if not media_url: 
                     drop_no_media += 1
