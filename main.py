@@ -16,6 +16,9 @@ from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
 import vk_api
 from vk_api.upload import VkUpload
+from PIL import Image
+import pytesseract
+from io import BytesIO
 
 sys.stdout.reconfigure(line_buffering=True)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -88,6 +91,22 @@ def ensure_state_files_exist():
     ]:
         if not os.path.exists(file):
             open(file, 'a').close()
+
+# 🆕 ПРОВЕРКА: ЯВЛЯЕТСЯ ЛИ КАРТИНКА ТЕКСТОВЫМ БАННЕРОМ
+def is_text_image(image_bytes):
+    try:
+        img = Image.open(BytesIO(image_bytes))
+        # Распознаем русский и английский текст
+        text = pytesseract.image_to_string(img, lang='rus+eng')
+        clean_text = re.sub(r'[^\w\s]', '', text).strip()
+        # Если текста больше 40 символов, это точно баннер, а не фото
+        if len(clean_text) > 40:
+            print(f"    [Отклонено: картинка с текстом] Распознано {len(clean_text)} символов.")
+            return True
+    except Exception as e:
+        # Если Tesseract не установлен или ошибка чтения — пропускаем проверку
+        pass
+    return False
 
 # --- УСИЛЕННАЯ ДЕДУПЛИКАЦИЯ ---
 def get_text_hash(text):
@@ -444,7 +463,6 @@ def process_video(video_bytes, is_nk=False):
     if video_bytes.startswith(b'<!DOCTYPE html>') or b'<html' in video_bytes[:1000]:
         return None, None
     
-    # 🆕 Если это Новокузнецк, не накладываем логотип
     if is_nk:
         logo_input = None
         fc = 'fps=30,scale=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p'
@@ -489,7 +507,7 @@ def send_video_tg(video_url, caption, chat_id, is_nk=False):
         ctype = resp.headers.get('Content-Type', '')
         video_data = resp.content
         if len(video_data) == 0 or 'video/' not in ctype or len(video_data) > 50 * 1024 * 1024: return False
-        video_data, thumb_data = process_video(video_data, is_nk) # 🆕 Передаем флаг is_nk
+        video_data, thumb_data = process_video(video_data, is_nk)
         if video_data is None: return False
         video_hash = hashlib.md5(video_data).hexdigest()
         files = {'video': ('video.mp4', video_data, 'video/mp4')}
@@ -511,6 +529,11 @@ def send_photo_tg(photo_url, caption, chat_id, is_nk=False):
         if 'image' not in ctype: return False
         photo_data = resp.content
         if len(photo_data) == 0 or len(photo_data) > 10 * 1024 * 1024: return False
+        
+        # 🆕 ПРОВЕРКА НА ТЕКСТ
+        if is_text_image(photo_data):
+            return False
+            
         files = {'photo': ('photo.jpg', photo_data, 'image/jpeg')}
         data = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"}
         r = requests.post(url, data=data, files=files, timeout=60)
@@ -547,7 +570,7 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, is
             vr = requests.get(direct_url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://t.me/'}, timeout=60, allow_redirects=True)
             if len(vr.content) < 100 * 1024 or 'video/' not in vr.headers.get('Content-Type', ''): return False
             if len(vr.content) > 250 * 1024 * 1024: return False
-            vdata, _ = process_video(vr.content, is_nk) # 🆕 Передаем флаг is_nk
+            vdata, _ = process_video(vr.content, is_nk)
             if vdata is None: return False
             up = requests.post("https://platform-api2.max.ru/uploads?type=video", headers={"Authorization": MAX_BOT_TOKEN}, timeout=15, verify=False)
             ud = up.json()
@@ -560,6 +583,11 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, is
         elif media_type == 'photo':
             pr = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60, allow_redirects=True)
             if 'image' not in pr.headers.get('Content-Type', '') or len(pr.content) > 10 * 1024 * 1024: return False
+            
+            # 🆕 ПРОВЕРКА НА ТЕКСТ
+            if is_text_image(pr.content):
+                return False
+                
             up = requests.post("https://platform-api2.max.ru/uploads?type=image", headers={"Authorization": MAX_BOT_TOKEN}, timeout=15, verify=False)
             ud = up.json()
             if not ud.get("url"): return False
@@ -650,7 +678,6 @@ def process_novokuznetsk(tg_videos, tg_photos):
     posted_nk_hashes = get_posted_nk_hashes()
     recent_nk_titles = get_recent_nk_titles()
     
-    # 1. Фильтруем ТГ на Новокузнецк
     for v in tg_videos:
         if any(k in v['summary'].lower() for k in NK_KEYWORDS):
             if v['media_url'] in posted_nk_videos: continue
@@ -668,7 +695,6 @@ def process_novokuznetsk(tg_videos, tg_photos):
             p['source_priority'] = 0
             nk_candidates.append(p)
             
-    # 2. Добавляем RSS Новокузнецка
     nk_candidates.extend(get_novokuznetsk_rss_candidates(now))
     
     if not nk_candidates:
@@ -697,7 +723,6 @@ def process_novokuznetsk(tg_videos, tg_photos):
         
         max_ok = False
         if MAX_NK_CHANNEL_ID:
-            # 🆕 Передаем is_nk=True, чтобы в MAX тоже не накладывался логотип
             max_ok = send_to_max(body, c['media_type'], c['media_url'], channel_id=MAX_NK_CHANNEL_ID, signature=SIGNATURE_NK_MAX, is_nk=True)
             print(f"Новокузнецк MAX: {'OK' if max_ok else 'FAIL'}")
             
@@ -720,10 +745,8 @@ def main():
         
     print(f"Собрано: {len(all_videos)} видео, {len(all_photos)} фото.")
     
-    # 1. Новокузнецк
     process_novokuznetsk(all_videos, all_photos)
     
-    # 2. Основной канал
     print("\n=== Основной канал ===")
     main_candidates = all_videos + all_photos
     main_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['age_hours']))
