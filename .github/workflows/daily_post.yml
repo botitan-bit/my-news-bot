@@ -2,11 +2,19 @@ name: News Bot
 
 on:
   schedule:
+    # Запуск каждый час (в 0 минут каждого часа)
     - cron: '0 * * * *'
-  workflow_dispatch:
+  workflow_dispatch: # Кнопка для ручного запуска
 
+# Даем права на запись, чтобы бот мог коммитить файлы состояния
 permissions:
   contents: write
+
+# 🆕 Блокировка одновременных запусков
+# Если предыдущий бот еще работает, новый не начнется, пока не завершится старый
+concurrency:
+  group: news-bot
+  cancel-in-progress: false
 
 jobs:
   run-bot:
@@ -49,13 +57,10 @@ jobs:
           git add posted_*.txt published_titles.txt last_theme.txt || true
           git diff --quiet && git diff --staged --quiet || git commit -m "Update bot state [skip ci]"
           
-          # 🆕 Подтягиваем изменения, если другой запуск уже что-то запушил
-          git pull --rebase origin main
-          
-          # Пытаемся запушить (с 3 попытками на случай гонки)
+          # 🆕 Подтягиваем свежие изменения и пушим с 3 попытками на случай гонки
           for i in 1 2 3; do
+            git pull --rebase origin main
             git push && break
             echo "Push failed, retrying... ($i/3)"
-            git pull --rebase origin main
             sleep 5
           done
