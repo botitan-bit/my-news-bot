@@ -35,11 +35,22 @@ MAX_NK_CHANNEL_ID = os.environ.get("MAX_NK_CHANNEL_ID", "").strip()
 LOGO_WIDTH = 80
 POST_PHOTO_TO_VK = True
 
+# --- Подписи для ОСНОВНОГО канала ---
 SIGNATURE_TG = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
 SIGNATURE_MAX = '**[ПЕРВЫЕ НОВОСТИ](https://max.ru/channel_pervonovosti)**'
 
-SIGNATURE_NK_TG = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">НОВОКУЗНЕЦК | ПЕРВЫЕ НОВОСТИ</a></b>'
-SIGNATURE_NK_MAX = '**[НОВОКУЗНЕЦК | ПЕРВЫЕ НОВОСТИ](https://max.ru/channel_pervonovosti)**'
+# --- 🆕 Подписи для канала НОВОКУЗНЕЦКА (с жирными ссылками) ---
+SIGNATURE_NK_TG = (
+    '<b><a href="https://t.me/nashNVKZ">Наш Новокузнецк</a></b>\n'
+    '<b><a href="https://vk.ru/nash_nvk">ВКонтакте</a></b>\n'
+    '<b><a href="https://max.ru/join/KJfHjhfG7xDFFhnOEyVaaYqTmknylJEj0jXAwSV-j48">Наш Новокузнецк в МАХ</a></b>'
+)
+
+SIGNATURE_NK_MAX = (
+    '**[Наш Новокузнецк](https://t.me/nashNVKZ)**\n'
+    '**[ВКонтакте](https://vk.ru/nash_nvk)**\n'
+    '**[Наш Новокузнецк в МАХ](https://max.ru/join/KJfHjhfG7xDFFhnOEyVaaYqTmknylJEj0jXAwSV-j48)**'
+)
 
 LOCAL_CHANNELS = {"novokuznetsk": "Новокузнецк"}
 
@@ -188,30 +199,22 @@ def extract_direct_video_url(url):
     except: pass
     return None
 
-# 🆕 ФУНКЦИЯ ДЛЯ ВЫТАСКИВАНИЯ КАРТИНКИ СО СТРАНИЦЫ
 def extract_image_from_url(url):
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
         if resp.status_code != 200: return None
         soup = BeautifulSoup(resp.text, "html.parser")
-        
-        # 1. Ищем og:image (стандарт для новостных сайтов)
         og_img = soup.select_one('meta[property="og:image"]')
         if og_img and og_img.get("content"):
             return og_img.get("content")
-            
-        # 2. Ищем twitter:image
         tw_img = soup.select_one('meta[name="twitter:image"]')
         if tw_img and tw_img.get("content"):
             return tw_img.get("content")
-            
-        # 3. Ищем просто первую большую картинку
         img_tag = soup.select_one('article img, .post img, .news-item img')
         if img_tag and img_tag.get("src"):
             src = img_tag.get("src")
-            if not src.startswith("data:"): # Игнорируем base64 заглушки
-                return src
+            if not src.startswith("data:"): return src
     except: pass
     return None
 
@@ -335,7 +338,7 @@ def get_tg_web_photos(channel_name, now):
     except: pass
     return photos
 
-# --- Парсинг RSS для Новокузнецка (С ВЫТАСКИВАНИЕМ КАРТИНОК) ---
+# --- Парсинг RSS для Новокузнецка ---
 def get_novokuznetsk_rss_candidates(now):
     posted_hashes = get_posted_nk_hashes()
     posted_photos = get_posted_nk_photos()
@@ -395,13 +398,11 @@ def get_novokuznetsk_rss_candidates(now):
                     img = soup.find('img')
                     if img and img.get('src'): media_url = img['src']; media_type = 'photo'
                 
-                # 🆕 ЕСЛИ НЕТ МЕДИА В RSS, ИДЕМ НА САЙТ
                 if not media_url and entry.get('link'):
                     fetched_img = extract_image_from_url(entry.get('link'))
                     if fetched_img:
                         media_url = fetched_img
                         media_type = 'photo'
-                        # print(f"    [Спасено со страницы] {title[:40]}...")
                 
                 if not media_url: 
                     drop_no_media += 1
