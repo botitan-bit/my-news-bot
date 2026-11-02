@@ -43,14 +43,11 @@ SIGNATURE_NK_MAX = '**[НОВОКУЗНЕЦК | ПЕРВЫЕ НОВОСТИ](htt
 
 LOCAL_CHANNELS = {"novokuznetsk": "Новокузнецк"}
 
-# 🆕 РАСШИРЕННЫЙ СПИСОК RSS-ЛЕНТ ДЛЯ НОВОКУЗНЕЦКА
 NK_RSS_FEEDS = [
-    # Центральные СМИ (проверяются в первую очередь)
     "https://ria.ru/export/rss2/index.xml",
     "https://abnews.ru/feed/tag/kemerovskaya-oblast/",
     "http://www.kuzbassfm.ru/rss/news.xml",
     "https://kemerovo42.info/feed/",
-    # Местные и региональные ленты через FreeNewsApi (обновляются ежечасно)
     "https://freenewsapi.ai/v1/rss?host=novokuznetsk-news.ru&size=50",
     "https://freenewsapi.ai/v1/rss?host=nk-news.ru&size=50",
     "https://freenewsapi.ai/v1/rss?host=kuzbass1.ru&size=50",
@@ -61,7 +58,6 @@ TG_CHANNELS = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi", "zhest_
 
 NK_KEYWORDS = ["новокузнецк", "кузбасс", "кемерово", "белово", "прокопьевск", "ленинск-кузнецкий", "междуреченск", "мыски", "осинники", "киселевск", "юрга", "анжеро-судженск", "мариинск", "тайга", "гуьевск", "таштагол", "полысаево", "калтан", "березовский", "топки"]
 
-# 🆕 КЛЮЧЕВЫЕ СЛОВА ДЛЯ «ИНТЕРЕСНЫХ» НОВОСТЕЙ (ПРОИСШЕСТВИЯ, ДТП, ПОЖАРЫ, МВД, СПОРТ)
 INTERESTING_NK_KEYWORDS = [
     "дтп", "авария", "столкновение", "сбил", "наезд", "перевернулся", "лобовое",
     "пожар", "возгорание", "горел", "сгорел", "поджог",
@@ -181,7 +177,6 @@ def is_ad_with_reason(text):
 def is_ad(text):
     return is_ad_with_reason(text) is not None
 
-# 🆕 ПРОВЕРКА: ЯВЛЯЕТСЯ ЛИ НОВОСТЬ «ИНТЕРЕСНОЙ» (ПРОИСШЕСТВИЯ, ДТП, ПОЖАРЫ, МВД, СПОРТ)
 def is_interesting_nk(text):
     lower = text.lower()
     return any(re.search(r'(?<![а-яёa-z])' + re.escape(k), lower) for k in INTERESTING_NK_KEYWORDS)
@@ -330,22 +325,32 @@ def get_tg_web_photos(channel_name, now):
     except: pass
     return photos
 
-# --- Парсинг RSS для Новокузнецка ---
+# --- Парсинг RSS для Новокузнецка (С ДИАГНОСТИКОЙ) ---
 def get_novokuznetsk_rss_candidates(now):
     posted_hashes = get_posted_nk_hashes()
     posted_photos = get_posted_nk_photos()
     posted_videos = get_posted_nk_videos()
     candidates = []
     
+    print("\n--- Диагностика RSS Новокузнецка ---")
     for feed_url in NK_RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
-            if not feed.entries: continue
+            if not feed.entries:
+                print(f"  [{feed_url[:40]}...] пусто")
+                continue
+                
+            entries_count = len(feed.entries)
+            city_matches = 0
+            boring_skipped = 0
+            candidates_found = 0
+            
             for entry in feed.entries:
                 title = entry.get('title', '')
                 summary = entry.get('summary', '') or entry.get('description', '')
                 full_text = f"{title} {summary}"
                 if not any(k in full_text.lower() for k in NK_KEYWORDS): continue
+                city_matches += 1
                 
                 pub_date = now
                 if 'published_parsed' in entry: pub_date = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
@@ -378,15 +383,15 @@ def get_novokuznetsk_rss_candidates(now):
                 
                 if not media_url: continue
                 
-                # Проверка URL медиа
                 if media_type == 'video' and media_url in posted_videos: continue
                 if media_type == 'photo' and media_url in posted_photos: continue
                 
                 clean_text = BeautifulSoup(summary, 'html.parser').get_text(separator='\n', strip=True)
                 if len(clean_text) < 20: continue
                 
-                # 🆕 ФИЛЬТР «ИНТЕРЕСНОСТИ»: ПРОПУСКАЕМ ТОЛЬКО ПРОИСШЕСТВИЯ, ДТП, ПОЖАРЫ, МВД, СПОРТ
                 if not is_interesting_nk(clean_text + " " + title):
+                    boring_skipped += 1
+                    print(f"    [Отклонено] {title[:60]}...")
                     continue
                 
                 th = get_text_hash(clean_text)
@@ -400,8 +405,12 @@ def get_novokuznetsk_rss_candidates(now):
                     'priority': get_nk_priority(clean_text),
                     'source_priority': 1 if "novokuznetsk-news" in feed_url else 0
                 })
+                candidates_found += 1
+                
+            print(f"  [{feed_url[:40]}...] Всего: {entries_count} | По городам: {city_matches} | Скучных: {boring_skipped} | Подошло: {candidates_found}")
+            
         except Exception as e:
-            pass
+            print(f"  Ошибка RSS {feed_url}: {e}")
     return candidates
 
 # --- Обработка видео ---
@@ -425,7 +434,7 @@ def process_video(video_bytes):
         cmd.extend(['-filter_complex', fc, '-c:v', 'libx264', '-profile:v', 'baseline', '-level', '3.0', '-crf', '23', '-preset', 'ultrafast', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', tout])
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
         if res.returncode != 0: return None, None
-        subprocess.run(['ffmpeg', '-y', '-ss', '00:00:01.000', '-i', tout, '-vf', 'scale=320:-1', '-vframes', '1', '-q:v', '2', tthumb], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        subprocess.run(['ffmpeg', '-y', '-ss', '00:00:01.000', '-i', tout, '-vf', 'scale=320:-1', '-vfps', '1', '-q:v', '2', tthumb], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
         out_bytes = None; thumb_bytes = None
         if os.path.exists(tout): 
             with open(tout, 'rb') as f: out_bytes = f.read()
@@ -611,7 +620,9 @@ def process_novokuznetsk(tg_videos, tg_photos):
     # 1. Фильтруем ТГ на Новокузнецк
     for v in tg_videos:
         if any(k in v['summary'].lower() for k in NK_KEYWORDS):
-            if not is_interesting_nk(v['summary']): continue
+            if not is_interesting_nk(v['summary']): 
+                print(f"    [NK TG Отклонено] {v['title'][:50]}...")
+                continue
             if v['media_url'] in posted_nk_videos: continue
             if is_duplicate_text(v['summary'], posted_nk_hashes): continue
             if is_duplicate_title(v['title'], recent_nk_titles): continue
@@ -620,7 +631,9 @@ def process_novokuznetsk(tg_videos, tg_photos):
             nk_candidates.append(v)
     for p in tg_photos:
         if any(k in p['summary'].lower() for k in NK_KEYWORDS):
-            if not is_interesting_nk(p['summary']): continue
+            if not is_interesting_nk(p['summary']): 
+                print(f"    [NK TG Отклонено] {p['title'][:50]}...")
+                continue
             if p['media_url'] in posted_nk_photos: continue
             if is_duplicate_text(p['summary'], posted_nk_hashes): continue
             if is_duplicate_title(p['title'], recent_nk_titles): continue
@@ -628,14 +641,13 @@ def process_novokuznetsk(tg_videos, tg_photos):
             p['source_priority'] = 0
             nk_candidates.append(p)
             
-    # 2. Добавляем RSS Новокузнецка (уже отфильтрованные по интересности)
+    # 2. Добавляем RSS Новокузнецка (с диагностикой)
     nk_candidates.extend(get_novokuznetsk_rss_candidates(now))
     
     if not nk_candidates:
-        print("Новокузнецк: ничего интересного не найдено.")
+        print("\nНовокузнецк: после фильтрации ничего не осталось.")
         return
         
-    # Сортировка: 1) Медиа (Видео=0, Фото=1), 2) Приоритет города, 3) Источник, 4) Свежесть
     nk_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['priority'], x['source_priority'], x['age_hours']))
     
     seen = set()
@@ -645,7 +657,7 @@ def process_novokuznetsk(tg_videos, tg_photos):
         seen.add(c['text_hash'])
         unique_nk.append(c)
         
-    print(f"\n=== Новости Новокузнецка (Найдено {len(unique_nk)}) ===")
+    print(f"\n=== Новости Новокузнецка (К публикации: {len(unique_nk)}) ===")
     for c in unique_nk[:5]:
         print(f"Кандидат ({c['media_type']}, Приоритет {c['priority']}): {c['title'][:50]}")
         body = rewrite_with_ai(c['title'], c['summary'], 'novokuznetsk')
@@ -686,7 +698,6 @@ def main():
     # 2. Основной канал
     print("\n=== Основной канал ===")
     main_candidates = all_videos + all_photos
-    # Приоритет: Видео (0), Фото (1), затем свежесть
     main_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['age_hours']))
     
     seen = set()
@@ -699,7 +710,6 @@ def main():
     posted_hashes = get_posted_hashes()
     recent_titles = get_recent_titles()
     
-    # Финальная проверка на дубли + заголовки
     final_candidates = []
     for c in unique_main:
         if is_duplicate_text(c['summary'], posted_hashes): continue
