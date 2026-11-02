@@ -43,14 +43,12 @@ SIGNATURE_NK_MAX = '**[НОВОКУЗНЕЦК | ПЕРВЫЕ НОВОСТИ](htt
 
 LOCAL_CHANNELS = {"novokuznetsk": "Новокузнецк"}
 
+# 🆕 ПРЯМЫЕ RSS-ЛЕНТЫ ЦЕНТРАЛЬНЫХ И РЕГИОНАЛЬНЫХ СМИ
 NK_RSS_FEEDS = [
-    "https://www.city-n.ru/rss/news.xml",
-    "https://vashgorod.ru/rss/news",
-    "https://nk-tv.ru/rss",
-    "https://kuzbassnews.ru/rss",
-    "https://www.kem.kp.ru/rss/",
-    "https://lenta.ru/rss/news",
-    "https://ria.ru/export/rss2/archive/index.xml",
+    "https://ria.ru/export/rss2/index.xml",
+    "https://abnews.ru/feed/tag/kemerovskaya-oblast/",
+    "http://www.kuzbassfm.ru/rss/news.xml",
+    "https://kemerovo42.info/feed/",
 ]
 
 # Только рекламные слова
@@ -179,13 +177,29 @@ def extract_direct_video_url(url):
         print(f"  ⚠️ extract_direct_video_url: {e}")
     return None
 
+# 🆕 ФУНКЦИЯ ПРИОРИТЕТА ДЛЯ НОВОКУЗНЕЦКА
+def get_nk_priority(text):
+    text_lower = text.lower()
+    if "новокузнецк" in text_lower:
+        return 1
+    if "кузбасс" in text_lower:
+        return 2
+    # Остальные города Кузбасса
+    other_cities = ["кемерово", "белово", "прокопьевск", "ленинск-кузнецкий", "междуреченск", 
+                    "мыски", "осинники", "киселевск", "юрга", "анжеро-судженск", "мариинск", 
+                    "тайга", "гуьевск", "таштагол", "полысаево", "калтан", "березовский", "топки"]
+    if any(city in text_lower for city in other_cities):
+        return 3
+    return 99
+
 # --- Новокузнецк ---
 def get_novokuznetsk_candidates():
     now = datetime.now(timezone.utc)
-    keywords = ["новокузнецк", "кузбасс", "кемерово"]
+    keywords = ["новокузнецк", "кузбасс", "кемерово", "белово", "прокопьевск", "ленинск-кузнецкий", "междуреченск", "мыски", "осинники", "киселевск", "юрга", "анжеро-судженск", "мариинск", "тайга", "гуьевск", "таштагол", "полысаево", "калтан", "березовский", "топки"]
     posted_hashes = get_posted_nk_hashes()
     posted_photos = get_posted_nk_photos()
     candidates = []
+    
     for feed_url in NK_RSS_FEEDS:
         try:
             feed = feedparser.parse(feed_url)
@@ -193,7 +207,12 @@ def get_novokuznetsk_candidates():
             for entry in feed.entries:
                 title = entry.get('title', '')
                 summary = entry.get('summary', '') or entry.get('description', '')
-                if not any(k in f"{title} {summary}".lower() for k in keywords): continue
+                full_text = f"{title} {summary}"
+                
+                # Проверяем, есть ли хоть один ключевой город
+                if not any(k in full_text.lower() for k in keywords): continue
+                
+                # 🆕 ОГРАНИЧЕНИЕ 24 ЧАСА
                 pub_date = now
                 if 'published_parsed' in entry:
                     pub_date = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
@@ -230,28 +249,40 @@ def get_novokuznetsk_candidates():
                     img = soup.find('img')
                     if img and img.get('src'):
                         media_url = img['src']; media_type = 'photo'
+                
                 if not media_url: continue
                 
                 clean_text = BeautifulSoup(summary, 'html.parser').get_text(separator='\n', strip=True)
                 if len(clean_text) < 20: continue
+                
+                # 🆕 ПРОВЕРКА НА ДУБЛИКАТЫ
                 if media_url in posted_photos: continue
                 th = get_text_hash(clean_text)
                 if is_duplicate_text(clean_text, posted_hashes): continue
                 if is_ad(clean_text): continue
                 
+                priority = get_nk_priority(clean_text)
+                
                 candidates.append({
                     'title': title, 'summary': clean_text, 'age_hours': age_hours,
                     'media_type': media_type, 'media_url': media_url,
-                    'link': entry.get('link', ''), 'text_hash': th, 'channel': 'novokuznetsk'
+                    'link': entry.get('link', ''), 'text_hash': th, 'channel': 'novokuznetsk',
+                    'priority': priority
                 })
         except Exception as e:
             print(f"Ошибка RSS {feed_url}: {e}")
+    
+    # 🆕 СОРТИРОВКА: Сначала по приоритету (1-Новокузнецк, 2-Кузбасс), потом по свежести
+    candidates.sort(key=lambda x: (x['priority'], x['age_hours']))
+    
+    # Дедупликация внутри батча
     seen = set()
     unique = []
     for c in candidates:
         if c['text_hash'] in seen: continue
         seen.add(c['text_hash'])
         unique.append(c)
+        
     return unique
 
 # --- Обработка видео ---
@@ -546,7 +577,6 @@ def get_tg_web_videos(channel_name, now):
 
 def get_news_candidates():
     now = datetime.now(timezone.utc)
-    # 🆕 Добавлен канал zhest_na_dorogah
     channels = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi", "zhest_na_dorogah"]
     print("  -> Ищем видео в Telegram-каналах...")
     all_v = []
@@ -644,9 +674,8 @@ def process_novokuznetsk():
     if not cands:
         print("Новокузнецк: ничего не найдено.")
         return
-    cands.sort(key=lambda x: x['age_hours'])
     for c in cands[:5]:
-        print(f"Кандидат: {c['title'][:60]}")
+        print(f"Кандидат (Приоритет {c['priority']}): {c['title'][:60]}")
         body = rewrite_with_ai(c['title'], c['summary'], 'novokuznetsk')
         if not body:
             print("Новокузнецк: ИИ отклонил.")
