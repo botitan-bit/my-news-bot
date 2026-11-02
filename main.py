@@ -43,11 +43,8 @@ SIGNATURE_NK_MAX = '**[НОВОКУЗНЕЦК | ПЕРВЫЕ НОВОСТИ](htt
 
 LOCAL_CHANNELS = {"novokuznetsk": "Новокузнецк"}
 
-# 🆕 ОБНОВЛЕННЫЙ СПИСОК RSS-ЛЕНТ (убраны мертвые freenewsapi и abnews)
 NK_RSS_FEEDS = [
-    # Центральные
     "https://ria.ru/export/rss2/index.xml",
-    # Местные (прямые ссылки)
     "http://www.kuzbassfm.ru/rss/news.xml",
     "https://kemerovo42.info/feed/",
     "https://www.city-n.ru/rss/news.xml",
@@ -59,16 +56,7 @@ TG_CHANNELS = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi", "zhest_
 
 NK_KEYWORDS = ["новокузнецк", "кузбасс", "кемерово", "белово", "прокопьевск", "ленинск-кузнецкий", "междуреченск", "мыски", "осинники", "киселевск", "юрга", "анжеро-судженск", "мариинск", "тайга", "гуьевск", "таштагол", "полысаево", "калтан", "березовский", "топки"]
 
-INTERESTING_NK_KEYWORDS = [
-    "дтп", "авария", "столкновение", "сбил", "наезд", "перевернулся", "лобовое",
-    "пожар", "возгорание", "горел", "сгорел", "поджог",
-    "происшествие", "чп", "трагедия", "погиб", "погибли", "пострадал", "пострадали", "жертв",
-    "мвд", "полиция", "росгвардия", "фсб", "следком", "уголовное", "задержан", "арестован",
-    "ограбление", "кража", "разбой", "убийство", "труп", "мошенничество", "наркотики",
-    "спорт", "футбол", "хоккей", "матч", "турнир", "чемпионат", "олимпиада", "тренер", "стадион",
-    "спасатели", "мчс", "эвакуация", "взрыв", "обрушение", "наводнение",
-    "розыск", "пропал", "пропавший", "без вести"
-]
+# 🆕 ФИЛЬТР "СКУЧНЫХ" НОВОСТЕЙ УДАЛЕН
 
 AD_WORDS = [
     "реклама", "промокод", "скидка", "erid", "маркировка",
@@ -166,7 +154,7 @@ def save_nk_published_title(t):
         with open("published_nk_titles.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(titles[-50:]) + "\n")
 
-# --- Проверка на рекламу и «интересность» ---
+# --- Проверка на рекламу ---
 def is_ad_with_reason(text):
     lower = text.lower()
     for w in AD_WORDS:
@@ -177,10 +165,6 @@ def is_ad_with_reason(text):
 
 def is_ad(text):
     return is_ad_with_reason(text) is not None
-
-def is_interesting_nk(text):
-    lower = text.lower()
-    return any(re.search(r'(?<![а-яёa-z])' + re.escape(k), lower) for k in INTERESTING_NK_KEYWORDS)
 
 # --- Извлечение ссылок ---
 def extract_direct_video_url(url):
@@ -343,7 +327,9 @@ def get_novokuznetsk_rss_candidates(now):
                 
             entries_count = len(feed.entries)
             city_matches = 0
-            boring_skipped = 0
+            drop_no_media = 0
+            drop_old = 0
+            drop_ad = 0
             candidates_found = 0
             
             for entry in feed.entries:
@@ -357,7 +343,9 @@ def get_novokuznetsk_rss_candidates(now):
                 if 'published_parsed' in entry: pub_date = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
                 elif 'updated_parsed' in entry: pub_date = datetime(*entry.updated_parsed[:6], tzinfo=timezone.utc)
                 age_hours = (now - pub_date).total_seconds() / 3600
-                if age_hours > 24: continue
+                if age_hours > 24: 
+                    drop_old += 1
+                    continue
                 
                 media_url = None
                 media_type = None
@@ -382,7 +370,9 @@ def get_novokuznetsk_rss_candidates(now):
                     img = soup.find('img')
                     if img and img.get('src'): media_url = img['src']; media_type = 'photo'
                 
-                if not media_url: continue
+                if not media_url: 
+                    drop_no_media += 1
+                    continue
                 
                 if media_type == 'video' and media_url in posted_videos: continue
                 if media_type == 'photo' and media_url in posted_photos: continue
@@ -390,14 +380,11 @@ def get_novokuznetsk_rss_candidates(now):
                 clean_text = BeautifulSoup(summary, 'html.parser').get_text(separator='\n', strip=True)
                 if len(clean_text) < 20: continue
                 
-                if not is_interesting_nk(clean_text + " " + title):
-                    boring_skipped += 1
-                    print(f"    [Отклонено] {title[:60]}...")
-                    continue
-                
                 th = get_text_hash(clean_text)
                 if is_duplicate_text(clean_text, posted_hashes): continue
-                if is_ad(clean_text): continue
+                if is_ad(clean_text): 
+                    drop_ad += 1
+                    continue
                 
                 candidates.append({
                     'title': title, 'summary': clean_text, 'age_hours': age_hours,
@@ -408,7 +395,7 @@ def get_novokuznetsk_rss_candidates(now):
                 })
                 candidates_found += 1
                 
-            print(f"  [{feed_url[:40]}...] Всего: {entries_count} | По городам: {city_matches} | Скучных: {boring_skipped} | Подошло: {candidates_found}")
+            print(f"  [{feed_url[:40]}...] Всего: {entries_count} | Города: {city_matches} | Без медиа: {drop_no_media} | Старые: {drop_old} | Реклама: {drop_ad} | Подошло: {candidates_found}")
             
         except Exception as e:
             print(f"  Ошибка RSS {feed_url}: {e}")
@@ -621,9 +608,6 @@ def process_novokuznetsk(tg_videos, tg_photos):
     # 1. Фильтруем ТГ на Новокузнецк
     for v in tg_videos:
         if any(k in v['summary'].lower() for k in NK_KEYWORDS):
-            if not is_interesting_nk(v['summary']): 
-                print(f"    [NK TG Отклонено] {v['title'][:50]}...")
-                continue
             if v['media_url'] in posted_nk_videos: continue
             if is_duplicate_text(v['summary'], posted_nk_hashes): continue
             if is_duplicate_title(v['title'], recent_nk_titles): continue
@@ -632,9 +616,6 @@ def process_novokuznetsk(tg_videos, tg_photos):
             nk_candidates.append(v)
     for p in tg_photos:
         if any(k in p['summary'].lower() for k in NK_KEYWORDS):
-            if not is_interesting_nk(p['summary']): 
-                print(f"    [NK TG Отклонено] {p['title'][:50]}...")
-                continue
             if p['media_url'] in posted_nk_photos: continue
             if is_duplicate_text(p['summary'], posted_nk_hashes): continue
             if is_duplicate_title(p['title'], recent_nk_titles): continue
@@ -642,7 +623,7 @@ def process_novokuznetsk(tg_videos, tg_photos):
             p['source_priority'] = 0
             nk_candidates.append(p)
             
-    # 2. Добавляем RSS Новокузнецка (с диагностикой)
+    # 2. Добавляем RSS Новокузнецка
     nk_candidates.extend(get_novokuznetsk_rss_candidates(now))
     
     if not nk_candidates:
