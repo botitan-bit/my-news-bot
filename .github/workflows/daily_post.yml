@@ -38,8 +38,6 @@ jobs:
           MAX_CHANNEL_ID: ${{ secrets.MAX_CHANNEL_ID }}
           VK_TOKEN: ${{ secrets.VK_TOKEN }}
           VK_GROUP_ID: ${{ secrets.VK_GROUP_ID }}
-          
-          # 🆕 ДОБАВЛЕНЫ ПЕРЕМЕННЫЕ НОВОКУЗНЕЦКА
           TG_NK_CHANNEL_ID: ${{ secrets.TG_NK_CHANNEL_ID }}
           MAX_NK_CHANNEL_ID: ${{ secrets.MAX_NK_CHANNEL_ID }}
         run: python main.py
@@ -50,4 +48,14 @@ jobs:
           git config --local user.name "GitHub Action"
           git add posted_*.txt published_titles.txt last_theme.txt || true
           git diff --quiet && git diff --staged --quiet || git commit -m "Update bot state [skip ci]"
-          git push
+          
+          # 🆕 Подтягиваем изменения, если другой запуск уже что-то запушил
+          git pull --rebase origin main
+          
+          # Пытаемся запушить (с 3 попытками на случай гонки)
+          for i in 1 2 3; do
+            git push && break
+            echo "Push failed, retrying... ($i/3)"
+            git pull --rebase origin main
+            sleep 5
+          done
