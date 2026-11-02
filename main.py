@@ -43,17 +43,35 @@ SIGNATURE_NK_MAX = '**[НОВОКУЗНЕЦК | ПЕРВЫЕ НОВОСТИ](htt
 
 LOCAL_CHANNELS = {"novokuznetsk": "Новокузнецк"}
 
+# 🆕 РАСШИРЕННЫЙ СПИСОК RSS-ЛЕНТ ДЛЯ НОВОКУЗНЕЦКА
 NK_RSS_FEEDS = [
+    # Центральные СМИ (проверяются в первую очередь)
     "https://ria.ru/export/rss2/index.xml",
     "https://abnews.ru/feed/tag/kemerovskaya-oblast/",
     "http://www.kuzbassfm.ru/rss/news.xml",
     "https://kemerovo42.info/feed/",
+    # Местные и региональные ленты через FreeNewsApi (обновляются ежечасно)
     "https://freenewsapi.ai/v1/rss?host=novokuznetsk-news.ru&size=50",
+    "https://freenewsapi.ai/v1/rss?host=nk-news.ru&size=50",
+    "https://freenewsapi.ai/v1/rss?host=kuzbass1.ru&size=50",
+    "https://freenewsapi.ai/v1/rss?host=kemerovo-news.net&size=50",
 ]
 
 TG_CHANNELS = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi", "zhest_na_dorogah"]
 
 NK_KEYWORDS = ["новокузнецк", "кузбасс", "кемерово", "белово", "прокопьевск", "ленинск-кузнецкий", "междуреченск", "мыски", "осинники", "киселевск", "юрга", "анжеро-судженск", "мариинск", "тайга", "гуьевск", "таштагол", "полысаево", "калтан", "березовский", "топки"]
+
+# 🆕 КЛЮЧЕВЫЕ СЛОВА ДЛЯ «ИНТЕРЕСНЫХ» НОВОСТЕЙ (ПРОИСШЕСТВИЯ, ДТП, ПОЖАРЫ, МВД, СПОРТ)
+INTERESTING_NK_KEYWORDS = [
+    "дтп", "авария", "столкновение", "сбил", "наезд", "перевернулся", "лобовое",
+    "пожар", "возгорание", "горел", "сгорел", "поджог",
+    "происшествие", "чп", "трагедия", "погиб", "погибли", "пострадал", "пострадали", "жертв",
+    "мвд", "полиция", "росгвардия", "фсб", "следком", "уголовное", "задержан", "арестован",
+    "ограбление", "кража", "разбой", "убийство", "труп", "мошенничество", "наркотики",
+    "спорт", "футбол", "хоккей", "матч", "турнир", "чемпионат", "олимпиада", "тренер", "стадион",
+    "спасатели", "мчс", "эвакуация", "взрыв", "обрушение", "наводнение",
+    "розыск", "пропал", "пропавший", "без вести"
+]
 
 AD_WORDS = [
     "реклама", "промокод", "скидка", "erid", "маркировка",
@@ -75,15 +93,11 @@ def ensure_state_files_exist():
 
 # --- УСИЛЕННАЯ ДЕДУПЛИКАЦИЯ ---
 def get_text_hash(text):
-    """40 уникальных слов (длиннее 4 символов), отсортированных. 
-    Это отпечаток текста, не зависящий от порядка слов."""
     clean = re.sub(r'[^\w\s]', '', text.lower())
     words = sorted(set([w for w in clean.split() if len(w) > 4]))
     return " ".join(words[:40])
 
 def is_duplicate_text(text, hashes):
-    """Сравнивает текст с историей через коэффициент Жаккара. 
-    Проверяет последние 500 записей (около 3 недель при 1 ч/день)."""
     clean = re.sub(r'[^\w\s]', '', text.lower())
     new_words = set(sorted(set([w for w in clean.split() if len(w) > 4]))[:40])
     if not new_words:
@@ -99,7 +113,6 @@ def is_duplicate_text(text, hashes):
     return False
 
 def is_duplicate_title(title, recent_titles):
-    """Проверка по заголовку: если точно совпадает или первые 20 символов совпадают — это повтор."""
     if not title or len(title) < 15:
         return False
     clean = re.sub(r'[^\w\s]', '', title.lower()).strip()
@@ -156,7 +169,7 @@ def save_nk_published_title(t):
         with open("published_nk_titles.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(titles[-50:]) + "\n")
 
-# --- Проверка на рекламу ---
+# --- Проверка на рекламу и «интересность» ---
 def is_ad_with_reason(text):
     lower = text.lower()
     for w in AD_WORDS:
@@ -167,6 +180,11 @@ def is_ad_with_reason(text):
 
 def is_ad(text):
     return is_ad_with_reason(text) is not None
+
+# 🆕 ПРОВЕРКА: ЯВЛЯЕТСЯ ЛИ НОВОСТЬ «ИНТЕРЕСНОЙ» (ПРОИСШЕСТВИЯ, ДТП, ПОЖАРЫ, МВД, СПОРТ)
+def is_interesting_nk(text):
+    lower = text.lower()
+    return any(re.search(r'(?<![а-яёa-z])' + re.escape(k), lower) for k in INTERESTING_NK_KEYWORDS)
 
 # --- Извлечение ссылок ---
 def extract_direct_video_url(url):
@@ -366,6 +384,10 @@ def get_novokuznetsk_rss_candidates(now):
                 
                 clean_text = BeautifulSoup(summary, 'html.parser').get_text(separator='\n', strip=True)
                 if len(clean_text) < 20: continue
+                
+                # 🆕 ФИЛЬТР «ИНТЕРЕСНОСТИ»: ПРОПУСКАЕМ ТОЛЬКО ПРОИСШЕСТВИЯ, ДТП, ПОЖАРЫ, МВД, СПОРТ
+                if not is_interesting_nk(clean_text + " " + title):
+                    continue
                 
                 th = get_text_hash(clean_text)
                 if is_duplicate_text(clean_text, posted_hashes): continue
@@ -589,6 +611,7 @@ def process_novokuznetsk(tg_videos, tg_photos):
     # 1. Фильтруем ТГ на Новокузнецк
     for v in tg_videos:
         if any(k in v['summary'].lower() for k in NK_KEYWORDS):
+            if not is_interesting_nk(v['summary']): continue
             if v['media_url'] in posted_nk_videos: continue
             if is_duplicate_text(v['summary'], posted_nk_hashes): continue
             if is_duplicate_title(v['title'], recent_nk_titles): continue
@@ -597,6 +620,7 @@ def process_novokuznetsk(tg_videos, tg_photos):
             nk_candidates.append(v)
     for p in tg_photos:
         if any(k in p['summary'].lower() for k in NK_KEYWORDS):
+            if not is_interesting_nk(p['summary']): continue
             if p['media_url'] in posted_nk_photos: continue
             if is_duplicate_text(p['summary'], posted_nk_hashes): continue
             if is_duplicate_title(p['title'], recent_nk_titles): continue
@@ -604,11 +628,11 @@ def process_novokuznetsk(tg_videos, tg_photos):
             p['source_priority'] = 0
             nk_candidates.append(p)
             
-    # 2. Добавляем RSS Новокузнецка
+    # 2. Добавляем RSS Новокузнецка (уже отфильтрованные по интересности)
     nk_candidates.extend(get_novokuznetsk_rss_candidates(now))
     
     if not nk_candidates:
-        print("Новокузнецк: ничего не найдено.")
+        print("Новокузнецк: ничего интересного не найдено.")
         return
         
     # Сортировка: 1) Медиа (Видео=0, Фото=1), 2) Приоритет города, 3) Источник, 4) Свежесть
