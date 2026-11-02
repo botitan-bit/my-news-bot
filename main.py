@@ -92,19 +92,16 @@ def ensure_state_files_exist():
         if not os.path.exists(file):
             open(file, 'a').close()
 
-# 🆕 ПРОВЕРКА: ЯВЛЯЕТСЯ ЛИ КАРТИНКА ТЕКСТОВЫМ БАННЕРОМ
+# --- ПРОВЕРКА НА ТЕКСТОВЫЕ БАННЕРЫ (OCR) ---
 def is_text_image(image_bytes):
     try:
         img = Image.open(BytesIO(image_bytes))
-        # Распознаем русский и английский текст
         text = pytesseract.image_to_string(img, lang='rus+eng')
         clean_text = re.sub(r'[^\w\s]', '', text).strip()
-        # Если текста больше 40 символов, это точно баннер, а не фото
         if len(clean_text) > 40:
             print(f"    [Отклонено: картинка с текстом] Распознано {len(clean_text)} символов.")
             return True
-    except Exception as e:
-        # Если Tesseract не установлен или ошибка чтения — пропускаем проверку
+    except Exception:
         pass
     return False
 
@@ -222,22 +219,32 @@ def extract_direct_video_url(url):
     except: pass
     return None
 
+# 🆕 УЛУЧШЕННАЯ ФУНКЦИЯ ИЗВЛЕЧЕНИЯ КАРТИНОК
 def extract_image_from_url(url):
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
         if resp.status_code != 200: return None
         soup = BeautifulSoup(resp.text, "html.parser")
+        
+        # 1. Ищем og:image
         og_img = soup.select_one('meta[property="og:image"]')
         if og_img and og_img.get("content"):
             return og_img.get("content")
+            
+        # 2. Ищем twitter:image
         tw_img = soup.select_one('meta[name="twitter:image"]')
         if tw_img and tw_img.get("content"):
             return tw_img.get("content")
-        img_tag = soup.select_one('article img, .post img, .news-item img')
-        if img_tag and img_tag.get("src"):
-            src = img_tag.get("src")
-            if not src.startswith("data:"): return src
+            
+        # 3. Ищем любую подходящую картинку (включая data-src)
+        img_tags = soup.find_all('img')
+        for img in img_tags:
+            src = img.get('src') or img.get('data-src') or img.get('data-original')
+            if src and not src.startswith('data:'):
+                # Делаем из относительной ссылки абсолютную
+                full_url = urljoin(url, src)
+                return full_url
     except: pass
     return None
 
@@ -381,6 +388,8 @@ def get_novokuznetsk_rss_candidates(now):
             drop_no_media = 0
             drop_old = 0
             drop_ad = 0
+            drop_short = 0
+            drop_dup = 0
             candidates_found = 0
             
             for entry in feed.entries:
@@ -431,14 +440,22 @@ def get_novokuznetsk_rss_candidates(now):
                     drop_no_media += 1
                     continue
                 
-                if media_type == 'video' and media_url in posted_videos: continue
-                if media_type == 'photo' and media_url in posted_photos: continue
+                if media_type == 'video' and media_url in posted_videos: 
+                    drop_dup += 1
+                    continue
+                if media_type == 'photo' and media_url in posted_photos: 
+                    drop_dup += 1
+                    continue
                 
                 clean_text = BeautifulSoup(summary, 'html.parser').get_text(separator='\n', strip=True)
-                if len(clean_text) < 20: continue
+                if len(clean_text) < 20: 
+                    drop_short += 1
+                    continue
                 
                 th = get_text_hash(clean_text)
-                if is_duplicate_text(clean_text, posted_hashes): continue
+                if is_duplicate_text(clean_text, posted_hashes): 
+                    drop_dup += 1
+                    continue
                 if is_ad(clean_text): 
                     drop_ad += 1
                     continue
@@ -452,7 +469,7 @@ def get_novokuznetsk_rss_candidates(now):
                 })
                 candidates_found += 1
                 
-            print(f"  [{feed_url[:40]}...] Всего: {entries_count} | Города: {city_matches} | Без медиа: {drop_no_media} | Старые: {drop_old} | Реклама: {drop_ad} | Подошло: {candidates_found}")
+            print(f"  [{feed_url[:40]}...] Всего: {entries_count} | Города: {city_matches} | Без медиа: {drop_no_media} | Старые: {drop_old} | Реклама: {drop_ad} | Короткие: {drop_short} | Дубли: {drop_dup} | Подошло: {candidates_found}")
             
         except Exception as e:
             print(f"  Ошибка RSS {feed_url}: {e}")
@@ -530,7 +547,6 @@ def send_photo_tg(photo_url, caption, chat_id, is_nk=False):
         photo_data = resp.content
         if len(photo_data) == 0 or len(photo_data) > 10 * 1024 * 1024: return False
         
-        # 🆕 ПРОВЕРКА НА ТЕКСТ
         if is_text_image(photo_data):
             return False
             
@@ -584,7 +600,6 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, is
             pr = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60, allow_redirects=True)
             if 'image' not in pr.headers.get('Content-Type', '') or len(pr.content) > 10 * 1024 * 1024: return False
             
-            # 🆕 ПРОВЕРКА НА ТЕКСТ
             if is_text_image(pr.content):
                 return False
                 
