@@ -39,17 +39,24 @@ POST_PHOTO_TO_VK = True
 SIGNATURE_TG = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
 SIGNATURE_MAX = '**[ПЕРВЫЕ НОВОСТИ](https://max.ru/channel_pervonovosti)**'
 
-# --- 🆕 Подписи для канала НОВОКУЗНЕЦКА (с жирными ссылками) ---
+# --- 🆕 ПОДПИСИ ДЛЯ КАНАЛА НОВОКУЗНЕЦКА ---
+
+# 1. Подпись для Telegram (порядок: ТГ, ВК, МАХ)
 SIGNATURE_NK_TG = (
-    '<b><a href="https://t.me/nashNVKZ">Наш Новокузнецк</a></b>\n'
+    '<b><a href="https://t.me/nashNVKZ">Телеграм</a></b>\n'
+    '-----\n'
     '<b><a href="https://vk.ru/nash_nvk">ВКонтакте</a></b>\n'
-    '<b><a href="https://max.ru/join/KJfHjhfG7xDFFhnOEyVaaYqTmknylJEj0jXAwSV-j48">Наш Новокузнецк в МАХ</a></b>'
+    '-----\n'
+    '<b><a href="https://max.ru/channel_nashNVKZ">МАХ</a></b>'
 )
 
+# 2. Подпись для MAX (порядок: МАХ, ВК, ТГ)
 SIGNATURE_NK_MAX = (
-    '**[Наш Новокузнецк](https://t.me/nashNVKZ)**\n'
+    '**[МАХ](https://max.ru/channel_nashNVKZ)**\n'
+    '-----\n'
     '**[ВКонтакте](https://vk.ru/nash_nvk)**\n'
-    '**[Наш Новокузнецк в МАХ](https://max.ru/join/KJfHjhfG7xDFFhnOEyVaaYqTmknylJEj0jXAwSV-j48)**'
+    '-----\n'
+    '**[Телеграм](https://t.me/nashNVKZ)**'
 )
 
 LOCAL_CHANNELS = {"novokuznetsk": "Новокузнецк"}
