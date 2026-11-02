@@ -38,6 +38,10 @@ jobs:
           MAX_CHANNEL_ID: ${{ secrets.MAX_CHANNEL_ID }}
           VK_TOKEN: ${{ secrets.VK_TOKEN }}
           VK_GROUP_ID: ${{ secrets.VK_GROUP_ID }}
+          
+          # 🆕 ДОБАВЛЕНЫ ПЕРЕМЕННЫЕ НОВОКУЗНЕЦКА
+          TG_NK_CHANNEL_ID: ${{ secrets.TG_NK_CHANNEL_ID }}
+          MAX_NK_CHANNEL_ID: ${{ secrets.MAX_NK_CHANNEL_ID }}
         run: python main.py
 
       - name: Commit state files
