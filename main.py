@@ -39,9 +39,7 @@ POST_PHOTO_TO_VK = True
 SIGNATURE_TG = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
 SIGNATURE_MAX = '**[ПЕРВЫЕ НОВОСТИ](https://max.ru/channel_pervonovosti)**'
 
-# --- 🆕 ПОДПИСИ ДЛЯ КАНАЛА НОВОКУЗНЕЦКА ---
-
-# 1. Подпись для Telegram (порядок: ТГ, ВК, МАХ)
+# --- ПОДПИСИ ДЛЯ КАНАЛА НОВОКУЗНЕЦКА ---
 SIGNATURE_NK_TG = (
     '<b><a href="https://t.me/nashNVKZ">Телеграм</a></b>\n'
     '-----\n'
@@ -50,7 +48,6 @@ SIGNATURE_NK_TG = (
     '<b><a href="https://max.ru/channel_nashNVKZ">МАХ</a></b>'
 )
 
-# 2. Подпись для MAX (порядок: МАХ, ВК, ТГ)
 SIGNATURE_NK_MAX = (
     '**[МАХ](https://max.ru/channel_nashNVKZ)**\n'
     '-----\n'
@@ -443,15 +440,22 @@ def get_novokuznetsk_rss_candidates(now):
     return candidates
 
 # --- Обработка видео ---
-def process_video(video_bytes):
+def process_video(video_bytes, is_nk=False):
     if video_bytes.startswith(b'<!DOCTYPE html>') or b'<html' in video_bytes[:1000]:
         return None, None
-    if not os.path.exists("logo.png"):
-        fc = 'fps=30,scale=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p'
+    
+    # 🆕 Если это Новокузнецк, не накладываем логотип
+    if is_nk:
         logo_input = None
+        fc = 'fps=30,scale=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p'
     else:
-        fc = f'[1:v]scale={LOGO_WIDTH}:-1[logo];[0:v][logo]overlay=W-w-20:20,fps=30,scale=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p'
-        logo_input = 'logo.png'
+        if not os.path.exists("logo.png"):
+            logo_input = None
+            fc = 'fps=30,scale=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p'
+        else:
+            logo_input = 'logo.png'
+            fc = f'[1:v]scale={LOGO_WIDTH}:-1[logo];[0:v][logo]overlay=W-w-20:20,fps=30,scale=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p'
+            
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tin:
             tin.write(video_bytes)
@@ -485,7 +489,7 @@ def send_video_tg(video_url, caption, chat_id, is_nk=False):
         ctype = resp.headers.get('Content-Type', '')
         video_data = resp.content
         if len(video_data) == 0 or 'video/' not in ctype or len(video_data) > 50 * 1024 * 1024: return False
-        video_data, thumb_data = process_video(video_data)
+        video_data, thumb_data = process_video(video_data, is_nk) # 🆕 Передаем флаг is_nk
         if video_data is None: return False
         video_hash = hashlib.md5(video_data).hexdigest()
         files = {'video': ('video.mp4', video_data, 'video/mp4')}
@@ -526,7 +530,7 @@ def send_to_telegram(text, media_type, media_url, channel_id=None, signature=Non
     return False
 
 # --- Отправка в MAX ---
-def send_to_max(text, media_type, media_url, channel_id=None, signature=None):
+def send_to_max(text, media_type, media_url, channel_id=None, signature=None, is_nk=False):
     if channel_id is None: channel_id = MAX_CHANNEL_ID
     if signature is None: signature = SIGNATURE_MAX
     if not MAX_BOT_TOKEN or not channel_id or media_type not in ('video', 'photo') or not media_url: return False
@@ -543,7 +547,7 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None):
             vr = requests.get(direct_url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://t.me/'}, timeout=60, allow_redirects=True)
             if len(vr.content) < 100 * 1024 or 'video/' not in vr.headers.get('Content-Type', ''): return False
             if len(vr.content) > 250 * 1024 * 1024: return False
-            vdata, _ = process_video(vr.content)
+            vdata, _ = process_video(vr.content, is_nk) # 🆕 Передаем флаг is_nk
             if vdata is None: return False
             up = requests.post("https://platform-api2.max.ru/uploads?type=video", headers={"Authorization": MAX_BOT_TOKEN}, timeout=15, verify=False)
             ud = up.json()
@@ -693,7 +697,8 @@ def process_novokuznetsk(tg_videos, tg_photos):
         
         max_ok = False
         if MAX_NK_CHANNEL_ID:
-            max_ok = send_to_max(body, c['media_type'], c['media_url'], channel_id=MAX_NK_CHANNEL_ID, signature=SIGNATURE_NK_MAX)
+            # 🆕 Передаем is_nk=True, чтобы в MAX тоже не накладывался логотип
+            max_ok = send_to_max(body, c['media_type'], c['media_url'], channel_id=MAX_NK_CHANNEL_ID, signature=SIGNATURE_NK_MAX, is_nk=True)
             print(f"Новокузнецк MAX: {'OK' if max_ok else 'FAIL'}")
             
         if tg_ok or max_ok:
