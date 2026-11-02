@@ -43,12 +43,16 @@ SIGNATURE_NK_MAX = '**[НОВОКУЗНЕЦК | ПЕРВЫЕ НОВОСТИ](htt
 
 LOCAL_CHANNELS = {"novokuznetsk": "Новокузнецк"}
 
-# 🆕 ПРЯМЫЕ RSS-ЛЕНТЫ ЦЕНТРАЛЬНЫХ И РЕГИОНАЛЬНЫХ СМИ
+# 🆕 ПРЯМЫЕ RSS-ЛЕНТЫ (центральные + местная в конце)
 NK_RSS_FEEDS = [
+    # Центральные и региональные СМИ (приоритет 0)
     "https://ria.ru/export/rss2/index.xml",
     "https://abnews.ru/feed/tag/kemerovskaya-oblast/",
     "http://www.kuzbassfm.ru/rss/news.xml",
     "https://kemerovo42.info/feed/",
+    
+    # 🆕 Местная лента Новокузнецка (приоритет 1, берем в последнюю очередь)
+    "https://freenewsapi.ai/v1/rss?host=novokuznetsk-news.ru&size=50",
 ]
 
 # Только рекламные слова
@@ -177,14 +181,13 @@ def extract_direct_video_url(url):
         print(f"  ⚠️ extract_direct_video_url: {e}")
     return None
 
-# 🆕 ФУНКЦИЯ ПРИОРИТЕТА ДЛЯ НОВОКУЗНЕЦКА
+# 🆕 ПРИОРИТЕТ ГОРОДОВ
 def get_nk_priority(text):
     text_lower = text.lower()
     if "новокузнецк" in text_lower:
         return 1
     if "кузбасс" in text_lower:
         return 2
-    # Остальные города Кузбасса
     other_cities = ["кемерово", "белово", "прокопьевск", "ленинск-кузнецкий", "междуреченск", 
                     "мыски", "осинники", "киселевск", "юрга", "анжеро-судженск", "мариинск", 
                     "тайга", "гуьевск", "таштагол", "полысаево", "калтан", "березовский", "топки"]
@@ -200,19 +203,21 @@ def get_novokuznetsk_candidates():
     posted_photos = get_posted_nk_photos()
     candidates = []
     
-    for feed_url in NK_RSS_FEEDS:
+    for idx, feed_url in enumerate(NK_RSS_FEEDS):
+        # 🆕 Определяем приоритет источника: центральные ленты (0), местная (1)
+        is_local_source = 1 if "novokuznetsk-news.ru" in feed_url else 0
+        
         try:
             feed = feedparser.parse(feed_url)
-            if not feed.entries: continue
+            if not feed.entries: 
+                continue
             for entry in feed.entries:
                 title = entry.get('title', '')
                 summary = entry.get('summary', '') or entry.get('description', '')
                 full_text = f"{title} {summary}"
                 
-                # Проверяем, есть ли хоть один ключевой город
                 if not any(k in full_text.lower() for k in keywords): continue
                 
-                # 🆕 ОГРАНИЧЕНИЕ 24 ЧАСА
                 pub_date = now
                 if 'published_parsed' in entry:
                     pub_date = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
@@ -255,7 +260,6 @@ def get_novokuznetsk_candidates():
                 clean_text = BeautifulSoup(summary, 'html.parser').get_text(separator='\n', strip=True)
                 if len(clean_text) < 20: continue
                 
-                # 🆕 ПРОВЕРКА НА ДУБЛИКАТЫ
                 if media_url in posted_photos: continue
                 th = get_text_hash(clean_text)
                 if is_duplicate_text(clean_text, posted_hashes): continue
@@ -267,15 +271,15 @@ def get_novokuznetsk_candidates():
                     'title': title, 'summary': clean_text, 'age_hours': age_hours,
                     'media_type': media_type, 'media_url': media_url,
                     'link': entry.get('link', ''), 'text_hash': th, 'channel': 'novokuznetsk',
-                    'priority': priority
+                    'priority': priority,
+                    'source_priority': is_local_source
                 })
         except Exception as e:
             print(f"Ошибка RSS {feed_url}: {e}")
     
-    # 🆕 СОРТИРОВКА: Сначала по приоритету (1-Новокузнецк, 2-Кузбасс), потом по свежести
-    candidates.sort(key=lambda x: (x['priority'], x['age_hours']))
+    # 🆕 Сортировка: сначала приоритет города, затем приоритет источника (центральные важнее), затем свежесть
+    candidates.sort(key=lambda x: (x['priority'], x['source_priority'], x['age_hours']))
     
-    # Дедупликация внутри батча
     seen = set()
     unique = []
     for c in candidates:
@@ -675,7 +679,8 @@ def process_novokuznetsk():
         print("Новокузнецк: ничего не найдено.")
         return
     for c in cands[:5]:
-        print(f"Кандидат (Приоритет {c['priority']}): {c['title'][:60]}")
+        source_label = "местная" if c.get('source_priority') == 1 else "центральная"
+        print(f"Кандидат (Приоритет {c['priority']}, {source_label}): {c['title'][:60]}")
         body = rewrite_with_ai(c['title'], c['summary'], 'novokuznetsk')
         if not body:
             print("Новокузнецк: ИИ отклонил.")
