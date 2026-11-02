@@ -43,15 +43,16 @@ SIGNATURE_NK_MAX = '**[НОВОКУЗНЕЦК | ПЕРВЫЕ НОВОСТИ](htt
 
 LOCAL_CHANNELS = {"novokuznetsk": "Новокузнецк"}
 
+# 🆕 ОБНОВЛЕННЫЙ СПИСОК RSS-ЛЕНТ (убраны мертвые freenewsapi и abnews)
 NK_RSS_FEEDS = [
+    # Центральные
     "https://ria.ru/export/rss2/index.xml",
-    "https://abnews.ru/feed/tag/kemerovskaya-oblast/",
+    # Местные (прямые ссылки)
     "http://www.kuzbassfm.ru/rss/news.xml",
     "https://kemerovo42.info/feed/",
-    "https://freenewsapi.ai/v1/rss?host=novokuznetsk-news.ru&size=50",
-    "https://freenewsapi.ai/v1/rss?host=nk-news.ru&size=50",
-    "https://freenewsapi.ai/v1/rss?host=kuzbass1.ru&size=50",
-    "https://freenewsapi.ai/v1/rss?host=kemerovo-news.net&size=50",
+    "https://www.city-n.ru/rss/news.xml",
+    "https://nk-tv.ru/rss",
+    "https://kuzbassnews.ru/rss",
 ]
 
 TG_CHANNELS = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi", "zhest_na_dorogah"]
