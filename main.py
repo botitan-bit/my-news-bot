@@ -61,12 +61,13 @@ SIGNATURE_NK_MAX = (
 
 LOCAL_CHANNELS = {"novokuznetsk": "Новокузнецк"}
 
+# 🆕 ОБНОВЛЕННЫЙ СПИСОК RSS-ЛЕНТ (добавлены рабочие kuzbass.media и vse42.ru)
 NK_RSS_FEEDS = [
     "https://ria.ru/export/rss2/index.xml",
     "http://www.kuzbassfm.ru/rss/news.xml",
     "https://kemerovo42.info/feed/",
-    "https://kuzbass-news.ru/feed/",
-    "https://novokuznetsk.su/rss/news.xml",
+    "https://kuzbass.media/feed/",
+    "https://vse42.ru/rss/news.xml",
     "https://www.kem.kp.ru/rss/",
 ]
 
@@ -624,24 +625,4 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, is
                 return False
         except: 
             if attempt == 2: return False
-            time.sleep(10)
-    return False
-
-# --- ИИ ---
-def call_groq(prompt):
-    if not GROQ_API_KEY: return ""
-    try:
-        r = requests.post("https://api.groq.com/openai/v1/chat/completions", 
-                          headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-                          json={"model": "openai/gpt-oss-120b", "messages": [{"role": "user", "content": prompt}]}, timeout=15)
-        r.raise_for_status()
-        return r.json()['choices'][0]['message']['content'].strip()
-    except: return ""
-
-def sanitize_html(text):
-    text = text.replace('<b>', '||BOLD_S||').replace('</b>', '||BOLD_E||')
-    text = html.escape(text)
-    return text.replace('||BOLD_S||', '<b>').replace('||BOLD_E||', '</b>')
-
-def rewrite_with_ai(title, summary, channel_name=""):
-    summary = re.sub(r'@[a-zA-Z0-
+            time
