@@ -103,18 +103,12 @@ def ensure_state_files_exist():
             open(file, 'a').close()
 
 def is_text_image(image_bytes, title_text=""):
-    """
-    Отклоняет картинки с текстом.
-    Теперь добавлена проверка на однотонный фон (сгенерированные обложки)
-    и проверка на совпадение текста картинки с заголовком новости.
-    """
     try:
         img = Image.open(BytesIO(image_bytes))
         W, H = img.size
         if W * H == 0:
             return False
 
-        # 1. Проверка на низкую вариативность цветов (однотонные обложки)
         img_gray = img.convert('L')
         stat = ImageStat.Stat(img_gray)
         stddev = stat.stddev[0] if stat.stddev else 0
@@ -148,15 +142,12 @@ def is_text_image(image_bytes, title_text=""):
         coverage = total_area / float(W * H)
         snippet = clean_text[:80].replace('\n', ' ')
         
-        # Выводим StdDev в лог для диагностики
         print(f"    [OCR-проверка] {len(clean_text)} симв., покрытие {coverage:.0%}, StdDev {stddev:.0f}: {snippet!r}")
 
-        # Если стандартное отклонение цвета очень низкое — это плашка/фон
         if stddev < 25:
             print(f"    [Отклонено: однотонная графика/обложка]")
             return True
 
-        # Если текст на картинке совпадает с заголовком новости — это сгенерированная обложка
         if title_text and len(clean_text) > 10:
             clean_t = re.sub(r'[^\w\s]', '', title_text.lower())
             t_words = set(clean_t.split())
@@ -167,14 +158,12 @@ def is_text_image(image_bytes, title_text=""):
                     print(f"    [Отклонено: обложка содержит заголовок новости]")
                     return True
 
-        # Проверка на рекламные маркеры
         lower_text = clean_text.lower()
         for phrase in IMG_AD_PHRASES:
             if phrase in lower_text:
                 print(f"    [Отклонено: рекламный баннер на картинке]")
                 return True
 
-        # Проверка на сплошной большой текст (мемы, скриншоты)
         if len(clean_text) > 150 and coverage > 0.25:
             print(f"    [Отклонено: картинка с большим текстом]")
             return True
@@ -262,7 +251,8 @@ def is_ad(text): return is_ad_with_reason(text) is not None
 def extract_direct_video_url(url):
     headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://t.me/'}
     try:
-        resp = requests.get(url, headers=headers, timeout=30, allow_redirects=True)
+        # ДОБАВЛЕН verify=False
+        resp = requests.get(url, headers=headers, timeout=30, allow_redirects=True, verify=False)
         ctype = resp.headers.get('Content-Type', '')
         if 'video/' in ctype: return url
         html_text = html.unescape(resp.text)
@@ -282,7 +272,8 @@ def extract_direct_video_url(url):
 def extract_image_from_url(url):
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+        # ДОБАВЛЕН verify=False
+        resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True, verify=False)
         if resp.status_code != 200: return None
         soup = BeautifulSoup(resp.text, "html.parser")
         og_img = soup.select_one('meta[property="og:image"]')
@@ -308,7 +299,7 @@ def get_tg_web_videos(channel_name, now):
     url = f"https://t.me/s/{channel_name}"
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        resp = requests.get(url, timeout=10, headers=headers)
+        resp = requests.get(url, timeout=10, headers=headers, verify=False)
         if resp.status_code != 200:
             print(f"  [{channel_name}] HTTP {resp.status_code}")
             return []
@@ -358,7 +349,7 @@ def get_tg_web_photos(channel_name, now):
     url = f"https://t.me/s/{channel_name}"
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        resp = requests.get(url, timeout=10, headers=headers)
+        resp = requests.get(url, timeout=10, headers=headers, verify=False)
         if resp.status_code != 200: return []
         soup = BeautifulSoup(resp.text, "html.parser")
         posts = soup.select(".tgme_widget_message[data-post]")
@@ -547,7 +538,8 @@ def send_video_tg(video_url, caption, chat_id, is_nk=False):
     direct_url = extract_direct_video_url(video_url)
     if not direct_url: return False
     try:
-        resp = requests.get(direct_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60)
+        # ДОБАВЛЕН verify=False
+        resp = requests.get(direct_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60, verify=False)
         ctype = resp.headers.get('Content-Type', '')
         video_data = resp.content
         if len(video_data) == 0 or 'video/' not in ctype or len(video_data) > 50 * 1024 * 1024: return False
@@ -570,7 +562,8 @@ def send_video_tg(video_url, caption, chat_id, is_nk=False):
 def send_photo_tg(photo_url, caption, chat_id, title="", is_nk=False):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     try:
-        resp = requests.get(photo_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+        # ДОБАВЛЕН verify=False
+        resp = requests.get(photo_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30, verify=False)
         ctype = resp.headers.get('Content-Type', '')
         if 'image' not in ctype: return False
         photo_data = resp.content
@@ -608,7 +601,8 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
         if media_type == 'video':
             direct_url = extract_direct_video_url(media_url)
             if not direct_url: return False
-            vr = requests.get(direct_url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://t.me/'}, timeout=60, allow_redirects=True)
+            # ДОБАВЛЕН verify=False
+            vr = requests.get(direct_url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://t.me/'}, timeout=60, allow_redirects=True, verify=False)
             if len(vr.content) < 100 * 1024 or 'video/' not in vr.headers.get('Content-Type', ''): return False
             if len(vr.content) > 250 * 1024 * 1024: return False
             vdata, _ = process_video(vr.content, is_nk)
@@ -622,7 +616,8 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
                 attachments.append({"type": "video", "payload": {"token": ud["token"]}})
             else: return False
         elif media_type == 'photo':
-            pr = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60, allow_redirects=True)
+            # ДОБАВЛЕН verify=False
+            pr = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60, allow_redirects=True, verify=False)
             if 'image' not in pr.headers.get('Content-Type', '') or len(pr.content) > 10 * 1024 * 1024: return False
             if is_text_image(pr.content, title): return False
             up = requests.post("https://platform-api2.max.ru/uploads?type=image", headers={"Authorization": MAX_BOT_TOKEN}, timeout=15, verify=False)
