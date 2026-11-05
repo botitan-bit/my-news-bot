@@ -44,6 +44,7 @@ MAX_NK_CHANNEL_ID = os.environ.get("MAX_NK_CHANNEL_ID", "").strip()
 
 LOGO_WIDTH = 80
 POST_PHOTO_TO_VK = True
+NK_MAX_ATTEMPTS = 10  # ФИКС 5: было [:5]
 
 # --- Подписи для ОСНОВНОГО канала ---
 SIGNATURE_TG = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
@@ -99,13 +100,51 @@ def ensure_state_files_exist():
         if not os.path.exists(file):
             open(file, 'a').close()
 
+# ФИКС 1: полностью переписан is_text_image
 def is_text_image(image_bytes):
+    """
+    Раньше: >40 символов OCR = отклон.
+    Теперь: отклоняем только если и текста много (>150 симв.) И он занимает
+    >25% площади картинки. Водяные знаки источников (~68 симв. в углу) проходят.
+    """
     try:
         img = Image.open(BytesIO(image_bytes))
-        text = pytesseract.image_to_string(img, lang='rus+eng')
-        clean_text = re.sub(r'[^\w\s]', '', text).strip()
-        if len(clean_text) > 40:
-            print(f"    [Отклонено: картинка с текстом] Распознано {len(clean_text)} символов.")
+        W, H = img.size
+        if W * H == 0:
+            return False
+
+        data = pytesseract.image_to_data(
+            img, lang='rus+eng', output_type=pytesseract.Output.DICT
+        )
+
+        words = []
+        total_area = 0
+        n = len(data.get('text', []))
+        for i in range(n):
+            w = (data['text'][i] or '').strip()
+            if not w:
+                continue
+            try:
+                conf = int(float(data['conf'][i]))
+            except (ValueError, TypeError):
+                conf = -1
+            if conf < 50:
+                continue
+            ww = int(data['width'][i] or 0)
+            hh = int(data['height'][i] or 0)
+            words.append(w)
+            total_area += ww * hh
+
+        clean_text = re.sub(r'[^\w\s]', '', ' '.join(words)).strip()
+        if len(clean_text) <= 40:
+            return False
+
+        coverage = total_area / float(W * H)
+        snippet = clean_text[:80].replace('\n', ' ')
+        print(f"    [OCR-проверка] {len(clean_text)} симв., покрытие {coverage:.0%}: {snippet!r}")
+
+        if len(clean_text) > 150 and coverage > 0.25:
+            print(f"    [Отклонено: картинка с текстом]")
             return True
     except Exception as e:
         print(f"    ⚠️ Ошибка OCR: {e}")
@@ -231,20 +270,20 @@ def get_nk_priority(text):
     if any(city in text_lower for city in NK_KEYWORDS[2:]): return 3
     return 99
 
+# ФИКС 2: убраны фильтры по posted_videos/posted_hashes основного канала.
+# Возвращаем "сырых" кандидатов, фильтрацию каждый канал делает сам.
 def get_tg_web_videos(channel_name, now):
     videos = []
-    posted_videos = get_posted_videos()
-    posted_hashes = get_posted_hashes()
     url = f"https://t.me/s/{channel_name}"
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         resp = requests.get(url, timeout=10, headers=headers)
-        if resp.status_code != 200: 
+        if resp.status_code != 200:
             print(f"  [{channel_name}] HTTP {resp.status_code}")
             return []
         soup = BeautifulSoup(resp.text, "html.parser")
         posts = soup.select(".tgme_widget_message[data-post]")
-        if not posts: 
+        if not posts:
             print(f"  [{channel_name}] Постов не найдено")
             return []
         print(f"  [{channel_name}] Найдено постов: {len(posts)}")
@@ -266,13 +305,11 @@ def get_tg_web_videos(channel_name, now):
                 if vl: v_url = vl.get("href")
             if not v_url: continue
             v_url = urljoin("https://t.me", v_url)
-            if v_url in posted_videos: continue
             txt = post.select_one(".tgme_widget_message_text")
             if not txt: continue
             clean = txt.get_text("\n", strip=True)
             if len(clean) < 20: continue
             th = get_text_hash(clean)
-            if is_duplicate_text(clean, posted_hashes): continue
             pid = post.get("data-post", "")
             if is_ad(clean): continue
             videos.append({
@@ -285,10 +322,9 @@ def get_tg_web_videos(channel_name, now):
         traceback.print_exc()
     return videos
 
+# ФИКС 2 (продолжение): аналогично для фото — не фильтруем по state основного канала.
 def get_tg_web_photos(channel_name, now):
     photos = []
-    posted_photos = get_posted_photos()
-    posted_hashes = get_posted_hashes()
     url = f"https://t.me/s/{channel_name}"
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -314,13 +350,11 @@ def get_tg_web_photos(channel_name, now):
                 if img and img.get("src"): p_url = img.get("src")
             if not p_url: continue
             p_url = urljoin("https://t.me", p_url)
-            if p_url in posted_photos: continue
             txt = post.select_one(".tgme_widget_message_text")
             if not txt: continue
             clean = txt.get_text("\n", strip=True)
             if len(clean) < 20: continue
             th = get_text_hash(clean)
-            if is_duplicate_text(clean, posted_hashes): continue
             pid = post.get("data-post", "")
             if is_ad(clean): continue
             photos.append({
@@ -363,7 +397,7 @@ def get_novokuznetsk_rss_candidates(now):
                 if 'published_parsed' in entry: pub_date = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
                 elif 'updated_parsed' in entry: pub_date = datetime(*entry.updated_parsed[:6], tzinfo=timezone.utc)
                 age_hours = (now - pub_date).total_seconds() / 3600
-                if age_hours > 24: 
+                if age_hours > 24:
                     drop_old += 1
                     continue
                 media_url = None
@@ -393,31 +427,32 @@ def get_novokuznetsk_rss_candidates(now):
                     if fetched_img:
                         media_url = fetched_img
                         media_type = 'photo'
-                if not media_url: 
+                if not media_url:
                     drop_no_media += 1
                     continue
-                if media_type == 'video' and media_url in posted_videos: 
+                if media_type == 'video' and media_url in posted_videos:
                     drop_dup += 1
                     continue
-                if media_type == 'photo' and media_url in posted_photos: 
+                if media_type == 'photo' and media_url in posted_photos:
                     drop_dup += 1
                     continue
                 clean_text = BeautifulSoup(summary, 'html.parser').get_text(separator='\n', strip=True)
-                if len(clean_text) < 20: 
+                if len(clean_text) < 20:
                     drop_short += 1
                     continue
                 th = get_text_hash(clean_text)
-                if is_duplicate_text(clean_text, posted_hashes): 
+                if is_duplicate_text(clean_text, posted_hashes):
                     drop_dup += 1
                     continue
-                if is_ad(clean_text): 
+                if is_ad(clean_text):
                     drop_ad += 1
                     continue
                 candidates.append({
                     'title': title, 'summary': clean_text, 'age_hours': age_hours,
                     'media_type': media_type, 'media_url': media_url,
                     'link': entry.get('link', ''), 'text_hash': th, 'channel': 'rss',
-                    'priority': get_nk_priority(clean_text),
+                    # ФИКС 4: приоритет по полному тексту, а не только по саммари
+                    'priority': get_nk_priority(full_text),
                     'source_priority': 1 if "novokuznetsk-news" in feed_url else 0
                 })
                 candidates_found += 1
@@ -452,9 +487,9 @@ def process_video(video_bytes, is_nk=False):
         if res.returncode != 0: return None, None
         subprocess.run(['ffmpeg', '-y', '-ss', '00:00:01.000', '-i', tout, '-vf', 'scale=320:-1', '-vfps', '1', '-q:v', '2', tthumb], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
         out_bytes = None; thumb_bytes = None
-        if os.path.exists(tout): 
+        if os.path.exists(tout):
             with open(tout, 'rb') as f: out_bytes = f.read()
-        if os.path.exists(tthumb): 
+        if os.path.exists(tthumb):
             with open(tthumb, 'rb') as f: thumb_bytes = f.read()
         return out_bytes, thumb_bytes
     except Exception as e:
@@ -577,7 +612,7 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, is
                 err = r.json()
                 if err.get("code") == "attachment.not.ready" and attempt < 2: time.sleep((attempt + 1) * 10); continue
                 return False
-        except Exception as e: 
+        except Exception as e:
             if attempt == 2: return False
             time.sleep(10)
     return False
@@ -585,7 +620,7 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, is
 def call_groq(prompt):
     if not GROQ_API_KEY: return ""
     try:
-        r = requests.post("https://api.groq.com/openai/v1/chat/completions", 
+        r = requests.post("https://api.groq.com/openai/v1/chat/completions",
                           headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
                           json={"model": "openai/gpt-oss-120b", "messages": [{"role": "user", "content": prompt}]}, timeout=15)
         r.raise_for_status()
@@ -664,10 +699,13 @@ def process_novokuznetsk(tg_videos, tg_photos):
         seen.add(c['text_hash'])
         unique_nk.append(c)
     print(f"\n=== Новости Новокузнецка (К публикации: {len(unique_nk)}) ===")
-    for c in unique_nk[:5]:
+    # ФИКС 5: увеличено с [:5] до NK_MAX_ATTEMPTS (10)
+    for c in unique_nk[:NK_MAX_ATTEMPTS]:
         print(f"Кандидат ({c['media_type']}, Приоритет {c['priority']}): {c['title'][:50]}")
         body = rewrite_with_ai(c['title'], c['summary'], 'novokuznetsk')
-        if not body: continue
+        if not body:
+            print("    ⚠️ rewrite_with_ai вернул None — пропуск")
+            continue
         tg_ok = False
         if TG_NK_CHANNEL_ID:
             tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], channel_id=TG_NK_CHANNEL_ID, signature=SIGNATURE_NK_TG, is_nk=True)
@@ -690,24 +728,32 @@ def main():
     for ch in TG_CHANNELS:
         all_videos.extend(get_tg_web_videos(ch, now))
         all_photos.extend(get_tg_web_photos(ch, now))
-    print(f"Собрано: {len(all_videos)} видео, {len(all_photos)} фото.")
+    print(f"Собрано (сырых): {len(all_videos)} видео, {len(all_photos)} фото.")
+
+    # НК получает "сырых" кандидатов и фильтрует их по своему state
     process_novokuznetsk(all_videos, all_photos)
+
     print("\n=== Основной канал ===")
+    # ФИКС 3: фильтрация основного канала теперь здесь (а не в get_tg_web_*)
     main_candidates = all_videos + all_photos
     main_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['age_hours']))
+
+    posted_hashes = get_posted_hashes()
+    posted_photos_urls = get_posted_photos()
+    recent_titles = get_recent_titles()
+
     seen = set()
     unique_main = []
     for c in main_candidates:
         if c['text_hash'] in seen: continue
-        seen.add(c['text_hash'])
-        unique_main.append(c)
-    posted_hashes = get_posted_hashes()
-    recent_titles = get_recent_titles()
-    final_candidates = []
-    for c in unique_main:
+        if c['media_type'] == 'photo' and c['media_url'] in posted_photos_urls: continue
         if is_duplicate_text(c['summary'], posted_hashes): continue
         if is_duplicate_title(c['title'], recent_titles): continue
-        final_candidates.append(c)
+        seen.add(c['text_hash'])
+        unique_main.append(c)
+
+    final_candidates = unique_main
+
     if final_candidates:
         print(f"🔥 Найдено {len(final_candidates)} кандидатов для основного канала.")
         for c in final_candidates[:5]:
