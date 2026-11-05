@@ -85,7 +85,8 @@ NK_KEYWORDS = ["новокузнецк", "кузбасс", "кемерово", "
 AD_WORDS = [
     "реклама", "промокод", "скидка", "erid", "маркировка",
     "казино", "ставки", "криптовалюта", "инвестиции", "заработок",
-    "подписывайтесь", "перейти по ссылке", "спонсор", "распродажа", "бонус",
+    "подписывайтесь", "подписаться", "подпишись", "перейти по ссылке", 
+    "спонсор", "распродажа", "бонус", "читать далее", "читать полностью", 
     "подарок", "бесплатно", "только сегодня", "успей", "торопись", "оформить заказ",
     "заказать", "купить", "магазин", "акция", "промо", "розыгрыш"
 ]
@@ -101,6 +102,21 @@ def ensure_state_files_exist():
     ]:
         if not os.path.exists(file):
             open(file, 'a').close()
+
+def clean_text_junk(text):
+    """Глубокая очистка текста от мусора, ссылок и призывов"""
+    if not text: return ""
+    text = html.unescape(text)
+    text = re.sub(r'<[^>]+>', ' ', text) # Убираем HTML теги
+    text = re.sub(r'https?://\S+', '', text) # Убираем ссылки
+    text = re.sub(r'@\w+', '', text) # Убираем упоминания
+    # Убираем призывы подписаться и прочий мусор
+    text = re.sub(r'(?i)\b(подписаться|подписывайтесь|подпишись|читать далее|читать полностью|источник|tg\s*\|\s*max|t\.me/\S+)\b', '', text)
+    # Убираем лишние точки и пробелы
+    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r'^[\.\,\-\:\s]+', '', text)
+    text = re.sub(r'[\.\,\-\:\s]+$', '', text)
+    return text
 
 def normalize_url(url, base=""):
     if not url: return None
@@ -286,6 +302,7 @@ def extract_image_from_url(url):
         if resp.status_code != 200: return None
         soup = BeautifulSoup(resp.text, "html.parser")
         
+        # Ищем ТОЛЬКО главную картинку статьи, чтобы не тащить случайный мусор
         og_img = soup.select_one('meta[property="og:image"]')
         if og_img and og_img.get("content"):
             img_url = normalize_url(og_img.get("content"), url)
@@ -296,14 +313,6 @@ def extract_image_from_url(url):
         if tw_img and tw_img.get("content"):
             img_url = normalize_url(tw_img.get("content"), url)
             if img_url and not is_bad_image_url(img_url): 
-                return img_url
-                
-        # Добавлен поиск по тегам <img> на странице, если og:image нет
-        for img in soup.find_all('img'):
-            src = img.get('src') or img.get('data-src')
-            if not src: continue
-            img_url = normalize_url(src, url)
-            if img_url and not is_bad_image_url(img_url):
                 return img_url
     except Exception as e: print(f"    ⚠️ Ошибка извлечения картинки: {e}")
     return None
@@ -496,6 +505,7 @@ def get_novokuznetsk_rss_candidates(now):
                             media_type = 'photo'
                             break
                 
+                # Если в фиде нет картинки, идем на сайт, но берем ТОЛЬКО og:image
                 if not media_url and link:
                     fetched_img = extract_image_from_url(link)
                     if fetched_img:
@@ -708,31 +718,22 @@ def call_groq(prompt):
         print(f"⚠️ Ошибка Groq: {e}")
         return ""
 
-# УЛУЧШЕННАЯ ФУНКЦИЯ: Убирает дублирование заголовка и текста
 def make_hybrid_post(title, summary):
-    # 1. Чистим заголовок
-    clean_title = html.unescape(title or "").strip()
-    clean_title = re.sub(r'<[^>]+>', '', clean_title)
-    clean_title = re.sub(r'https?://\S+', '', clean_title)
-    clean_title = re.sub(r'@\w+', '', clean_title)
-    clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+    # 1. Глубокая очистка заголовка
+    clean_title = clean_text_junk(title)
     
     if len(clean_title) > 100:
-        clean_title = clean_title[:100] + "..."
+        clean_title = clean_title[:100].strip() + "..."
         
     if not clean_title:
         clean_title = "Новость"
 
-    # 2. Чистим текст новости
-    clean_summary = html.unescape(summary or "").strip()
-    clean_summary = re.sub(r'<[^>]+>', ' ', clean_summary)
-    clean_summary = re.sub(r'https?://\S+', '', clean_summary)
-    clean_summary = re.sub(r'@\w+', '', clean_summary)
-    clean_summary = re.sub(r'\s+', ' ', clean_summary).strip()
+    # 2. Глубокая очистка текста
+    clean_summary = clean_text_junk(summary)
 
     # 3. Убираем заголовок из начала текста, чтобы не было дубля
-    if clean_title in clean_summary:
-        clean_summary = clean_summary.replace(clean_title, "", 1).strip()
+    if clean_title and clean_summary.startswith(clean_title):
+        clean_summary = clean_summary[len(clean_title):].strip()
 
     if not clean_summary or len(clean_summary) < 10:
         return f"<b>{clean_title}</b>"
@@ -755,6 +756,11 @@ def make_hybrid_post(title, summary):
             ai_text = ai_text[:800] + "..."
             
     ai_text = html.escape(ai_text.strip())
+    
+    # Если вдруг ИИ все равно продублировал заголовок в тексте
+    if ai_text.lower().startswith(clean_title.lower()):
+        ai_text = ai_text[len(clean_title):].strip()
+        
     return f"<b>{clean_title}</b>\n\n{ai_text}"
 
 def process_novokuznetsk(tg_videos, tg_photos):
