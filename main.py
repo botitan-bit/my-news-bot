@@ -22,7 +22,7 @@ from PIL import Image
 import pytesseract
 from io import BytesIO
 
-# 🆕 Принудительный сброс буфера, чтобы все print доходили до логов GitHub
+# Принудительный сброс буфера, чтобы все print доходили до логов GitHub
 sys.stdout.reconfigure(line_buffering=True)
 print = functools.partial(print, flush=True)
 
@@ -656,7 +656,4 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, is
     return False
 
 # --- ИИ ---
-def call_groq(prompt):
-    if not GROQ_API_KEY: return ""
-    try:
-        r =
+def call_gro
