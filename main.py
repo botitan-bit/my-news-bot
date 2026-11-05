@@ -297,6 +297,14 @@ def extract_image_from_url(url):
             img_url = normalize_url(tw_img.get("content"), url)
             if img_url and not is_bad_image_url(img_url): 
                 return img_url
+                
+        # Добавлен поиск по тегам <img> на странице, если og:image нет
+        for img in soup.find_all('img'):
+            src = img.get('src') or img.get('data-src')
+            if not src: continue
+            img_url = normalize_url(src, url)
+            if img_url and not is_bad_image_url(img_url):
+                return img_url
     except Exception as e: print(f"    ⚠️ Ошибка извлечения картинки: {e}")
     return None
 
@@ -348,9 +356,13 @@ def get_tg_web_videos(channel_name, now):
             pid = post.get("data-post", "")
             if is_ad(clean): continue
             
-            lines = [l.strip() for l in clean.split('\n') if l.strip()]
-            title = lines[0] if lines else "Новость"
-            
+            # Ищем первое предложение для заголовка
+            first_sentence_match = re.search(r'^([^.!?\n]+[.!?])', clean)
+            if first_sentence_match and len(first_sentence_match.group(1)) < 120:
+                title = first_sentence_match.group(1).strip()
+            else:
+                title = clean[:80].strip() + "..."
+                
             videos.append({
                 "title": title, "summary": clean, "age_hours": age,
                 "media_type": "video", "media_url": v_url,
@@ -396,9 +408,12 @@ def get_tg_web_photos(channel_name, now):
             pid = post.get("data-post", "")
             if is_ad(clean): continue
             
-            lines = [l.strip() for l in clean.split('\n') if l.strip()]
-            title = lines[0] if lines else "Новость"
-            
+            first_sentence_match = re.search(r'^([^.!?\n]+[.!?])', clean)
+            if first_sentence_match and len(first_sentence_match.group(1)) < 120:
+                title = first_sentence_match.group(1).strip()
+            else:
+                title = clean[:80].strip() + "..."
+                
             photos.append({
                 "title": title, "summary": clean, "age_hours": age,
                 "media_type": "photo", "media_url": p_url,
@@ -693,48 +708,53 @@ def call_groq(prompt):
         print(f"⚠️ Ошибка Groq: {e}")
         return ""
 
-def sanitize_html(text):
-    text = text.replace('<b>', '||BOLD_S||').replace('</b>', '||BOLD_E||')
-    text = html.escape(text)
-    return text.replace('||BOLD_S||', '<b>').replace('||BOLD_E||', '</b>')
-
-# ОБНОВЛЕННАЯ ФУНКЦИЯ: Берем оригинальный заголовок, ИИ сжимает только текст
+# УЛУЧШЕННАЯ ФУНКЦИЯ: Убирает дублирование заголовка и текста
 def make_hybrid_post(title, summary):
-    # 1. Очищаем ОРИГИНАЛЬНЫЙ заголовок от мусора
+    # 1. Чистим заголовок
     clean_title = html.unescape(title or "").strip()
     clean_title = re.sub(r'<[^>]+>', '', clean_title)
     clean_title = re.sub(r'https?://\S+', '', clean_title)
     clean_title = re.sub(r'@\w+', '', clean_title)
     clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+    
+    if len(clean_title) > 100:
+        clean_title = clean_title[:100] + "..."
+        
     if not clean_title:
         clean_title = "Новость"
 
-    # 2. Просим ИИ сжать текст (без заголовка!)
-    prompt = f"""Ты — строгий редактор. Сделай из этого текста краткую сводку новости.
-1. Сохрани все факты, имена, цифры и даты. Не придумывай ничего от себя.
-2. Убери "воду", ссылки, рекламу, упоминания каналов.
+    # 2. Чистим текст новости
+    clean_summary = html.unescape(summary or "").strip()
+    clean_summary = re.sub(r'<[^>]+>', ' ', clean_summary)
+    clean_summary = re.sub(r'https?://\S+', '', clean_summary)
+    clean_summary = re.sub(r'@\w+', '', clean_summary)
+    clean_summary = re.sub(r'\s+', ' ', clean_summary).strip()
+
+    # 3. Убираем заголовок из начала текста, чтобы не было дубля
+    if clean_title in clean_summary:
+        clean_summary = clean_summary.replace(clean_title, "", 1).strip()
+
+    if not clean_summary or len(clean_summary) < 10:
+        return f"<b>{clean_title}</b>"
+
+    # 4. Отдаем в ИИ (только текст, заголовок запрещен)
+    prompt = f"""Ты — редактор. Сделай краткую сводку текста ниже.
+1. Сохрани все факты, имена, цифры.
+2. Убери "воду", ссылки, рекламу.
 3. Максимальная длина: 400-500 символов.
-4. Запрещены эмодзи.
-5. Верни ТОЛЬКО готовый текст, без заголовков.
+4. Если текст уже короткий, просто верни его как есть.
+5. НЕ пиши заголовок. Только текст.
+6. Запрещены эмодзи.
 ТЕКСТ:
-{summary}"""
+{clean_summary}"""
     
     ai_text = call_groq(prompt)
-    
-    # Если ИИ упал, берем оригинал
     if not ai_text:
-        print("    ⚠️ Groq не ответил, используем оригинальный текст...")
-        ai_text = html.unescape(summary or "")
-        ai_text = re.sub(r'<[^>]+>', ' ', ai_text)
-        ai_text = re.sub(r'https?://\S+', '', ai_text)
-        ai_text = re.sub(r'@\w+', '', ai_text)
-        ai_text = re.sub(r'\s+', ' ', ai_text).strip()
+        ai_text = clean_summary
         if len(ai_text) > 800:
             ai_text = ai_text[:800] + "..."
             
-    # Защита от HTML-тегов в ответе ИИ
-    ai_text = html.escape(ai_text)
-
+    ai_text = html.escape(ai_text.strip())
     return f"<b>{clean_title}</b>\n\n{ai_text}"
 
 def process_novokuznetsk(tg_videos, tg_photos):
