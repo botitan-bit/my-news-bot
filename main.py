@@ -44,7 +44,7 @@ MAX_NK_CHANNEL_ID = os.environ.get("MAX_NK_CHANNEL_ID", "").strip()
 
 LOGO_WIDTH = 80
 POST_PHOTO_TO_VK = True
-NK_MAX_ATTEMPTS = 10  # ФИКС 5: было [:5]
+NK_MAX_ATTEMPTS = 10
 
 # --- Подписи для ОСНОВНОГО канала ---
 SIGNATURE_TG = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
@@ -90,6 +90,9 @@ AD_WORDS = [
     "заказать", "купить", "магазин", "акция", "промо", "розыгрыш"
 ]
 
+# Рекламные маркеры для OCR (распознавание баннеров на картинках)
+IMG_AD_PHRASES = ["8-800", "8 800", "ооо", "реклама", "заказать", "erid", "промокод", "скидка", "змппсм", "агротрак"]
+
 def ensure_state_files_exist():
     for file in [
         "last_theme.txt", "posted_news.txt", "published_titles.txt",
@@ -100,12 +103,10 @@ def ensure_state_files_exist():
         if not os.path.exists(file):
             open(file, 'a').close()
 
-# ФИКС 1: полностью переписан is_text_image
 def is_text_image(image_bytes):
     """
-    Раньше: >40 символов OCR = отклон.
-    Теперь: отклоняем только если и текста много (>150 симв.) И он занимает
-    >25% площади картинки. Водяные знаки источников (~68 симв. в углу) проходят.
+    Отклоняет картинки с большим количеством текста (скриншоты, мемы)
+    ИЛИ картинки, содержащие типичные рекламные маркеры (баннеры).
     """
     try:
         img = Image.open(BytesIO(image_bytes))
@@ -143,6 +144,14 @@ def is_text_image(image_bytes):
         snippet = clean_text[:80].replace('\n', ' ')
         print(f"    [OCR-проверка] {len(clean_text)} симв., покрытие {coverage:.0%}: {snippet!r}")
 
+        # Проверка на рекламный баннер по тексту
+        lower_text = clean_text.lower()
+        for phrase in IMG_AD_PHRASES:
+            if phrase in lower_text:
+                print(f"    [Отклонено: рекламный баннер на картинке]")
+                return True
+
+        # Проверка на сплошной текст (мемы, скриншоты)
         if len(clean_text) > 150 and coverage > 0.25:
             print(f"    [Отклонено: картинка с текстом]")
             return True
@@ -270,8 +279,6 @@ def get_nk_priority(text):
     if any(city in text_lower for city in NK_KEYWORDS[2:]): return 3
     return 99
 
-# ФИКС 2: убраны фильтры по posted_videos/posted_hashes основного канала.
-# Возвращаем "сырых" кандидатов, фильтрацию каждый канал делает сам.
 def get_tg_web_videos(channel_name, now):
     videos = []
     url = f"https://t.me/s/{channel_name}"
@@ -322,7 +329,6 @@ def get_tg_web_videos(channel_name, now):
         traceback.print_exc()
     return videos
 
-# ФИКС 2 (продолжение): аналогично для фото — не фильтруем по state основного канала.
 def get_tg_web_photos(channel_name, now):
     photos = []
     url = f"https://t.me/s/{channel_name}"
@@ -418,15 +424,33 @@ def get_novokuznetsk_rss_candidates(now):
                     if not media_url and 'links' in entry:
                         for link in entry.links:
                             if link.get('rel') == 'enclosure' and link.get('type', '').startswith('image'): media_url = link.get('href'); media_type = 'photo'; break
-                if not media_url and summary:
-                    soup = BeautifulSoup(summary, 'html.parser')
-                    img = soup.find('img')
-                    if img and img.get('src'): media_url = img['src']; media_type = 'photo'
+                
+                # ФИКС: Сначала пробуем достать главную картинку со страницы новости (og:image)
                 if not media_url and entry.get('link'):
                     fetched_img = extract_image_from_url(entry.get('link'))
                     if fetched_img:
                         media_url = fetched_img
                         media_type = 'photo'
+
+                # ФИКС: Если картинки нет, берем из summary, но фильтруем баннеры
+                if not media_url and summary:
+                    soup = BeautifulSoup(summary, 'html.parser')
+                    for img in soup.find_all('img'):
+                        src = img.get('src', '')
+                        if not src or src.startswith('data:'): continue
+                        
+                        # Проверяем, не рекламный ли это баннер
+                        parent_a = img.find_parent('a')
+                        href = parent_a.get('href', '') if parent_a else ''
+                        lower_src = src.lower()
+                        lower_href = href.lower()
+                        if any(k in lower_src or k in lower_href for k in ['banner', 'reklama', 'ad_', 'adv', 'click']):
+                            continue # Пропускаем баннеры
+                        
+                        media_url = src
+                        media_type = 'photo'
+                        break
+
                 if not media_url:
                     drop_no_media += 1
                     continue
@@ -451,7 +475,6 @@ def get_novokuznetsk_rss_candidates(now):
                     'title': title, 'summary': clean_text, 'age_hours': age_hours,
                     'media_type': media_type, 'media_url': media_url,
                     'link': entry.get('link', ''), 'text_hash': th, 'channel': 'rss',
-                    # ФИКС 4: приоритет по полному тексту, а не только по саммари
                     'priority': get_nk_priority(full_text),
                     'source_priority': 1 if "novokuznetsk-news" in feed_url else 0
                 })
@@ -699,7 +722,6 @@ def process_novokuznetsk(tg_videos, tg_photos):
         seen.add(c['text_hash'])
         unique_nk.append(c)
     print(f"\n=== Новости Новокузнецка (К публикации: {len(unique_nk)}) ===")
-    # ФИКС 5: увеличено с [:5] до NK_MAX_ATTEMPTS (10)
     for c in unique_nk[:NK_MAX_ATTEMPTS]:
         print(f"Кандидат ({c['media_type']}, Приоритет {c['priority']}): {c['title'][:50]}")
         body = rewrite_with_ai(c['title'], c['summary'], 'novokuznetsk')
@@ -730,11 +752,9 @@ def main():
         all_photos.extend(get_tg_web_photos(ch, now))
     print(f"Собрано (сырых): {len(all_videos)} видео, {len(all_photos)} фото.")
 
-    # НК получает "сырых" кандидатов и фильтрует их по своему state
     process_novokuznetsk(all_videos, all_photos)
 
     print("\n=== Основной канал ===")
-    # ФИКС 3: фильтрация основного канала теперь здесь (а не в get_tg_web_*)
     main_candidates = all_videos + all_photos
     main_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['age_hours']))
 
