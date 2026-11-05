@@ -286,22 +286,19 @@ def extract_image_from_url(url):
         if resp.status_code != 200: return None
         soup = BeautifulSoup(resp.text, "html.parser")
         
+        # ФИКС: Ищем ТОЛЬКО главную картинку новости (og:image или twitter:image).
+        # Убираем поиск по всем <img> тегам, из-за которого бот тащил рекламу и превью из сайдбаров!
         og_img = soup.select_one('meta[property="og:image"]')
         if og_img and og_img.get("content"):
             img_url = normalize_url(og_img.get("content"), url)
-            if img_url and not is_bad_image_url(img_url): return img_url
+            if img_url and not is_bad_image_url(img_url): 
+                return img_url
             
         tw_img = soup.select_one('meta[name="twitter:image"]')
         if tw_img and tw_img.get("content"):
             img_url = normalize_url(tw_img.get("content"), url)
-            if img_url and not is_bad_image_url(img_url): return img_url
-            
-        for img in soup.find_all('img'):
-            src = img.get('src') or img.get('data-src') or img.get('data-original')
-            if src and not src.startswith('data:'):
-                img_url = normalize_url(src, url)
-                if img_url and not is_bad_image_url(img_url):
-                    return img_url
+            if img_url and not is_bad_image_url(img_url): 
+                return img_url
     except Exception as e: print(f"    ⚠️ Ошибка извлечения картинки: {e}")
     return None
 
@@ -444,7 +441,6 @@ def get_novokuznetsk_rss_candidates(now):
                 media_type = None
                 link = entry.get('link', '')
 
-                # 1. Ищем видео
                 if 'media_content' in entry:
                     for m in entry.media_content:
                         if m.get('type', '').startswith('video'): media_url = normalize_url(m.get('url'), link); media_type = 'video'; break
@@ -452,7 +448,6 @@ def get_novokuznetsk_rss_candidates(now):
                     for l in entry.links:
                         if l.get('rel') == 'enclosure' and l.get('type', '').startswith('video'): media_url = normalize_url(l.get('href'), link); media_type = 'video'; break
                 
-                # 2. Ищем картинку в RSS (перебираем, пока не найдем нормальную)
                 if not media_url:
                     for m in entry.get('media_content', []):
                         if m.get('type', '').startswith('image'):
@@ -468,7 +463,6 @@ def get_novokuznetsk_rss_candidates(now):
                                 u = normalize_url(l.get('href'), link)
                                 if u and not is_bad_image_url(u): media_url = u; media_type = 'photo'; break
                 
-                # 3. Ищем картинку в html тексте summary
                 if not media_url and summary:
                     soup = BeautifulSoup(summary, 'html.parser')
                     for img in soup.find_all('img'):
@@ -481,14 +475,12 @@ def get_novokuznetsk_rss_candidates(now):
                             media_type = 'photo'
                             break
                 
-                # 4. Если совсем нет, идем на сайт статьи
                 if not media_url and link:
                     fetched_img = extract_image_from_url(link)
                     if fetched_img:
                         media_url = fetched_img
                         media_type = 'photo'
 
-                # ЕСЛИ НЕТ МЕДИА - ПРОПУСКАЕМ (выполняем ваше условие)
                 if not media_url:
                     drop_no_media += 1
                     continue
@@ -705,11 +697,14 @@ def rewrite_with_ai(title, summary, channel_name=""):
     summary = re.sub(r'https?://t\.me/[a-zA-Z0-9_]+', '', summary)
     if channel_name in LOCAL_CHANNELS: ci = 'Добавь город, если есть улица без него.'
     else: ci = 'Не добавляй города, если их нет.'
+    
+    # ФИКС: Изменен промпт для генерации качественного заголовка (как в новостях)
     prompt = f"""Ты — строгий редактор. Оформи новость.
 1. Не меняй смысл и факты.
 2. Удали явные оскорбления и призывы к насилию.
 3. Если текст >800 символов — сократи до сути.
-4. Сверху жирный заголовок (до 80 символов) в <b>...</b>.
+4. Сверху жирный заголовок (до 80 символов) в <b>...</b>. 
+Сделай его как в настоящих новостях. Назови главное действующее лицо (страну, человека, организацию) или суть события. Избегай общих вводных слов вроде «Страна заявила», если можно написать «США заявили» или «Трамп сделал».
 5. После заголовка — ДВА переноса и текст.
 6. Удали упоминания каналов и ссылки на Telegram.
 7. {ci}
