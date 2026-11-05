@@ -286,8 +286,6 @@ def extract_image_from_url(url):
         if resp.status_code != 200: return None
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # ФИКС: Ищем ТОЛЬКО главную картинку новости (og:image или twitter:image).
-        # Убираем поиск по всем <img> тегам, из-за которого бот тащил рекламу и превью из сайдбаров!
         og_img = soup.select_one('meta[property="og:image"]')
         if og_img and og_img.get("content"):
             img_url = normalize_url(og_img.get("content"), url)
@@ -349,8 +347,12 @@ def get_tg_web_videos(channel_name, now):
             th = get_text_hash(clean)
             pid = post.get("data-post", "")
             if is_ad(clean): continue
+            
+            lines = [l.strip() for l in clean.split('\n') if l.strip()]
+            title = lines[0] if lines else "Новость"
+            
             videos.append({
-                "title": clean[:60] + "...", "summary": clean, "age_hours": age,
+                "title": title, "summary": clean, "age_hours": age,
                 "media_type": "video", "media_url": v_url,
                 "link": f"https://t.me/{pid}", "text_hash": th, "channel": channel_name
             })
@@ -393,8 +395,12 @@ def get_tg_web_photos(channel_name, now):
             th = get_text_hash(clean)
             pid = post.get("data-post", "")
             if is_ad(clean): continue
+            
+            lines = [l.strip() for l in clean.split('\n') if l.strip()]
+            title = lines[0] if lines else "Новость"
+            
             photos.append({
-                "title": clean[:60] + "...", "summary": clean, "age_hours": age,
+                "title": title, "summary": clean, "age_hours": age,
                 "media_type": "photo", "media_url": p_url,
                 "link": f"https://t.me/{pid}", "text_hash": th, "channel": channel_name
             })
@@ -692,37 +698,44 @@ def sanitize_html(text):
     text = html.escape(text)
     return text.replace('||BOLD_S||', '<b>').replace('||BOLD_E||', '</b>')
 
-def rewrite_with_ai(title, summary, channel_name=""):
-    summary = re.sub(r'@[a-zA-Z0-9_]+', '', summary)
-    summary = re.sub(r'https?://t\.me/[a-zA-Z0-9_]+', '', summary)
-    if channel_name in LOCAL_CHANNELS: ci = 'Добавь город, если есть улица без него.'
-    else: ci = 'Не добавляй города, если их нет.'
-    
-    # ФИКС: Изменен промпт для генерации качественного заголовка (как в новостях)
-    prompt = f"""Ты — строгий редактор. Оформи новость.
-1. Не меняй смысл и факты.
-2. Удали явные оскорбления и призывы к насилию.
-3. Если текст >800 символов — сократи до сути.
-4. Сверху жирный заголовок (до 80 символов) в <b>...</b>. 
-Сделай его как в настоящих новостях. Назови главное действующее лицо (страну, человека, организацию) или суть события. Избегай общих вводных слов вроде «Страна заявила», если можно написать «США заявили» или «Трамп сделал».
-5. После заголовка — ДВА переноса и текст.
-6. Удали упоминания каналов и ссылки на Telegram.
-7. {ci}
-8. Запрещены эмодзи.
-9. Оформляй любой текст.
-ФОРМАТ: только готовый пост.
+# ОБНОВЛЕННАЯ ФУНКЦИЯ: Берем оригинальный заголовок, ИИ сжимает только текст
+def make_hybrid_post(title, summary):
+    # 1. Очищаем ОРИГИНАЛЬНЫЙ заголовок от мусора
+    clean_title = html.unescape(title or "").strip()
+    clean_title = re.sub(r'<[^>]+>', '', clean_title)
+    clean_title = re.sub(r'https?://\S+', '', clean_title)
+    clean_title = re.sub(r'@\w+', '', clean_title)
+    clean_title = re.sub(r'\s+', ' ', clean_title).strip()
+    if not clean_title:
+        clean_title = "Новость"
+
+    # 2. Просим ИИ сжать текст (без заголовка!)
+    prompt = f"""Ты — строгий редактор. Сделай из этого текста краткую сводку новости.
+1. Сохрани все факты, имена, цифры и даты. Не придумывай ничего от себя.
+2. Убери "воду", ссылки, рекламу, упоминания каналов.
+3. Максимальная длина: 400-500 символов.
+4. Запрещены эмодзи.
+5. Верни ТОЛЬКО готовый текст, без заголовков.
 ТЕКСТ:
 {summary}"""
-    raw = call_groq(prompt)
-    if not raw: return None
-    raw = re.sub(r'^(Category|Рубрика|Категория):.*?\n', '', raw, flags=re.IGNORECASE)
-    raw = re.sub(r'</b>\s*', '</b>\n\n', raw)
-    raw = raw.replace('\\n', '\n')[:1000]
-    raw = re.sub(r'[^.!?\n]+$', '', raw).strip()
-    raw = re.sub(r'\n{3,}', '\n\n', raw)
-    raw = re.sub(r'[^\w\sа-яА-ЯёЁ.,;:!?()\[\]{}<>="\'/\-+#*&%$@|~^]', '', raw)
-    if len(re.sub(r'<[^>]+>', '', raw).strip()) < 15: return None
-    return sanitize_html(raw)
+    
+    ai_text = call_groq(prompt)
+    
+    # Если ИИ упал, берем оригинал
+    if not ai_text:
+        print("    ⚠️ Groq не ответил, используем оригинальный текст...")
+        ai_text = html.unescape(summary or "")
+        ai_text = re.sub(r'<[^>]+>', ' ', ai_text)
+        ai_text = re.sub(r'https?://\S+', '', ai_text)
+        ai_text = re.sub(r'@\w+', '', ai_text)
+        ai_text = re.sub(r'\s+', ' ', ai_text).strip()
+        if len(ai_text) > 800:
+            ai_text = ai_text[:800] + "..."
+            
+    # Защита от HTML-тегов в ответе ИИ
+    ai_text = html.escape(ai_text)
+
+    return f"<b>{clean_title}</b>\n\n{ai_text}"
 
 def process_novokuznetsk(tg_videos, tg_photos):
     if not TG_NK_CHANNEL_ID and not MAX_NK_CHANNEL_ID: return
@@ -762,10 +775,8 @@ def process_novokuznetsk(tg_videos, tg_photos):
     print(f"\n=== Новости Новокузнецка (К публикации: {len(unique_nk)}) ===")
     for c in unique_nk[:NK_MAX_ATTEMPTS]:
         print(f"Кандидат ({c['media_type']}, Приоритет {c['priority']}): {c['title'][:50]}")
-        body = rewrite_with_ai(c['title'], c['summary'], 'novokuznetsk')
-        if not body:
-            print("    ⚠️ rewrite_with_ai вернул None — используем оригинальный текст")
-            body = f"<b>{c['title']}</b>\n\n{c['summary']}"
+        
+        body = make_hybrid_post(c['title'], c['summary'])
             
         tg_ok = False
         if TG_NK_CHANNEL_ID:
@@ -817,9 +828,8 @@ def main():
         print(f"🔥 Найдено {len(final_candidates)} кандидатов для основного канала.")
         for c in final_candidates[:5]:
             print(f"\nКандидат: {c['title']} ({c['media_type']})")
-            body = rewrite_with_ai(c['title'], c['summary'], c.get('channel', ''))
-            if not body: 
-                body = f"<b>{c['title']}</b>\n\n{c['summary']}"
+            
+            body = make_hybrid_post(c['title'], c['summary'])
                 
             tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], title=c['title'])
             print(f"Telegram: {'OK' if tg_ok else 'FAIL'}")
