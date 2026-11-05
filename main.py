@@ -18,7 +18,7 @@ from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
 import vk_api
 from vk_api.upload import VkUpload
-from PIL import Image
+from PIL import Image, ImageStat
 import pytesseract
 from io import BytesIO
 
@@ -90,7 +90,6 @@ AD_WORDS = [
     "заказать", "купить", "магазин", "акция", "промо", "розыгрыш"
 ]
 
-# Рекламные маркеры для OCR (распознавание баннеров на картинках)
 IMG_AD_PHRASES = ["8-800", "8 800", "ооо", "реклама", "заказать", "erid", "промокод", "скидка", "змппсм", "агротрак"]
 
 def ensure_state_files_exist():
@@ -103,16 +102,22 @@ def ensure_state_files_exist():
         if not os.path.exists(file):
             open(file, 'a').close()
 
-def is_text_image(image_bytes):
+def is_text_image(image_bytes, title_text=""):
     """
-    Отклоняет картинки с большим количеством текста (скриншоты, мемы)
-    ИЛИ картинки, содержащие типичные рекламные маркеры (баннеры).
+    Отклоняет картинки с текстом.
+    Теперь добавлена проверка на однотонный фон (сгенерированные обложки)
+    и проверка на совпадение текста картинки с заголовком новости.
     """
     try:
         img = Image.open(BytesIO(image_bytes))
         W, H = img.size
         if W * H == 0:
             return False
+
+        # 1. Проверка на низкую вариативность цветов (однотонные обложки)
+        img_gray = img.convert('L')
+        stat = ImageStat.Stat(img_gray)
+        stddev = stat.stddev[0] if stat.stddev else 0
 
         data = pytesseract.image_to_data(
             img, lang='rus+eng', output_type=pytesseract.Output.DICT
@@ -142,19 +147,38 @@ def is_text_image(image_bytes):
 
         coverage = total_area / float(W * H)
         snippet = clean_text[:80].replace('\n', ' ')
-        print(f"    [OCR-проверка] {len(clean_text)} симв., покрытие {coverage:.0%}: {snippet!r}")
+        
+        # Выводим StdDev в лог для диагностики
+        print(f"    [OCR-проверка] {len(clean_text)} симв., покрытие {coverage:.0%}, StdDev {stddev:.0f}: {snippet!r}")
 
-        # Проверка на рекламный баннер по тексту
+        # Если стандартное отклонение цвета очень низкое — это плашка/фон
+        if stddev < 25:
+            print(f"    [Отклонено: однотонная графика/обложка]")
+            return True
+
+        # Если текст на картинке совпадает с заголовком новости — это сгенерированная обложка
+        if title_text and len(clean_text) > 10:
+            clean_t = re.sub(r'[^\w\s]', '', title_text.lower())
+            t_words = set(clean_t.split())
+            o_words = set(clean_text.lower().split())
+            if t_words:
+                overlap = len(t_words.intersection(o_words)) / len(t_words)
+                if overlap > 0.5:
+                    print(f"    [Отклонено: обложка содержит заголовок новости]")
+                    return True
+
+        # Проверка на рекламные маркеры
         lower_text = clean_text.lower()
         for phrase in IMG_AD_PHRASES:
             if phrase in lower_text:
                 print(f"    [Отклонено: рекламный баннер на картинке]")
                 return True
 
-        # Проверка на сплошной текст (мемы, скриншоты)
+        # Проверка на сплошной большой текст (мемы, скриншоты)
         if len(clean_text) > 150 and coverage > 0.25:
-            print(f"    [Отклонено: картинка с текстом]")
+            print(f"    [Отклонено: картинка с большим текстом]")
             return True
+
     except Exception as e:
         print(f"    ⚠️ Ошибка OCR: {e}")
     return False
@@ -425,28 +449,23 @@ def get_novokuznetsk_rss_candidates(now):
                         for link in entry.links:
                             if link.get('rel') == 'enclosure' and link.get('type', '').startswith('image'): media_url = link.get('href'); media_type = 'photo'; break
                 
-                # ФИКС: Сначала пробуем достать главную картинку со страницы новости (og:image)
                 if not media_url and entry.get('link'):
                     fetched_img = extract_image_from_url(entry.get('link'))
                     if fetched_img:
                         media_url = fetched_img
                         media_type = 'photo'
 
-                # ФИКС: Если картинки нет, берем из summary, но фильтруем баннеры
                 if not media_url and summary:
                     soup = BeautifulSoup(summary, 'html.parser')
                     for img in soup.find_all('img'):
                         src = img.get('src', '')
                         if not src or src.startswith('data:'): continue
-                        
-                        # Проверяем, не рекламный ли это баннер
                         parent_a = img.find_parent('a')
                         href = parent_a.get('href', '') if parent_a else ''
                         lower_src = src.lower()
                         lower_href = href.lower()
                         if any(k in lower_src or k in lower_href for k in ['banner', 'reklama', 'ad_', 'adv', 'click']):
-                            continue # Пропускаем баннеры
-                        
+                            continue
                         media_url = src
                         media_type = 'photo'
                         break
@@ -548,7 +567,7 @@ def send_video_tg(video_url, caption, chat_id, is_nk=False):
         traceback.print_exc()
     return False
 
-def send_photo_tg(photo_url, caption, chat_id, is_nk=False):
+def send_photo_tg(photo_url, caption, chat_id, title="", is_nk=False):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     try:
         resp = requests.get(photo_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
@@ -556,7 +575,7 @@ def send_photo_tg(photo_url, caption, chat_id, is_nk=False):
         if 'image' not in ctype: return False
         photo_data = resp.content
         if len(photo_data) == 0 or len(photo_data) > 10 * 1024 * 1024: return False
-        if is_text_image(photo_data): return False
+        if is_text_image(photo_data, title): return False
         files = {'photo': ('photo.jpg', photo_data, 'image/jpeg')}
         data = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"}
         r = requests.post(url, data=data, files=files, timeout=60)
@@ -569,15 +588,15 @@ def send_photo_tg(photo_url, caption, chat_id, is_nk=False):
         traceback.print_exc()
     return False
 
-def send_to_telegram(text, media_type, media_url, channel_id=None, signature=None, is_nk=False):
+def send_to_telegram(text, media_type, media_url, channel_id=None, signature=None, title="", is_nk=False):
     if channel_id is None: channel_id = TELEGRAM_CHANNEL_ID
     if signature is None: signature = SIGNATURE_TG
     full_text = f"{text}\n\n{signature}"
     if media_type == 'video' and media_url: return send_video_tg(media_url, full_text, channel_id, is_nk)
-    elif media_type == 'photo' and media_url: return send_photo_tg(media_url, full_text, channel_id, is_nk)
+    elif media_type == 'photo' and media_url: return send_photo_tg(media_url, full_text, channel_id, title, is_nk)
     return False
 
-def send_to_max(text, media_type, media_url, channel_id=None, signature=None, is_nk=False):
+def send_to_max(text, media_type, media_url, channel_id=None, signature=None, title="", is_nk=False):
     if channel_id is None: channel_id = MAX_CHANNEL_ID
     if signature is None: signature = SIGNATURE_MAX
     if not MAX_BOT_TOKEN or not channel_id or media_type not in ('video', 'photo') or not media_url: return False
@@ -605,7 +624,7 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, is
         elif media_type == 'photo':
             pr = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60, allow_redirects=True)
             if 'image' not in pr.headers.get('Content-Type', '') or len(pr.content) > 10 * 1024 * 1024: return False
-            if is_text_image(pr.content): return False
+            if is_text_image(pr.content, title): return False
             up = requests.post("https://platform-api2.max.ru/uploads?type=image", headers={"Authorization": MAX_BOT_TOKEN}, timeout=15, verify=False)
             ud = up.json()
             if not ud.get("url"): return False
@@ -730,11 +749,11 @@ def process_novokuznetsk(tg_videos, tg_photos):
             continue
         tg_ok = False
         if TG_NK_CHANNEL_ID:
-            tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], channel_id=TG_NK_CHANNEL_ID, signature=SIGNATURE_NK_TG, is_nk=True)
+            tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], channel_id=TG_NK_CHANNEL_ID, signature=SIGNATURE_NK_TG, title=c['title'], is_nk=True)
             print(f"Новокузнецк TG: {'OK' if tg_ok else 'FAIL'}")
         max_ok = False
         if MAX_NK_CHANNEL_ID:
-            max_ok = send_to_max(body, c['media_type'], c['media_url'], channel_id=MAX_NK_CHANNEL_ID, signature=SIGNATURE_NK_MAX, is_nk=True)
+            max_ok = send_to_max(body, c['media_type'], c['media_url'], channel_id=MAX_NK_CHANNEL_ID, signature=SIGNATURE_NK_MAX, title=c['title'], is_nk=True)
             print(f"Новокузнецк MAX: {'OK' if max_ok else 'FAIL'}")
         if tg_ok or max_ok:
             save_posted_nk_hash(c['text_hash'])
@@ -780,13 +799,13 @@ def main():
             print(f"\nКандидат: {c['title']} ({c['media_type']})")
             body = rewrite_with_ai(c['title'], c['summary'], c.get('channel', ''))
             if not body: continue
-            tg_ok = send_to_telegram(body, c['media_type'], c['media_url'])
+            tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], title=c['title'])
             print(f"Telegram: {'OK' if tg_ok else 'FAIL'}")
             if not tg_ok: continue
             save_posted_link(c['link'])
             save_published_title(c['title'])
             save_posted_hash(c['text_hash'])
-            max_ok = send_to_max(body, c['media_type'], c['media_url'])
+            max_ok = send_to_max(body, c['media_type'], c['media_url'], title=c['title'])
             print(f"MAX: {'OK' if max_ok else 'FAIL'}")
             print("\n🎉 Готово!")
             return
