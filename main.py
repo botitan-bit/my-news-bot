@@ -1,8 +1,9 @@
 import os
+import sys
+import functools
 import feedparser
 import requests
 import re
-import sys
 import html
 import time
 import io
@@ -11,6 +12,7 @@ import hashlib
 import random
 import subprocess
 import tempfile
+import traceback
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
@@ -20,8 +22,13 @@ from PIL import Image
 import pytesseract
 from io import BytesIO
 
+# 🆕 Принудительный сброс буфера, чтобы все print доходили до логов GitHub
 sys.stdout.reconfigure(line_buffering=True)
+print = functools.partial(print, flush=True)
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+print("=== БОТ ЗАПУСТИЛСЯ ===")
 
 # --- Ключи ---
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
@@ -61,7 +68,7 @@ SIGNATURE_NK_MAX = (
 
 LOCAL_CHANNELS = {"novokuznetsk": "Новокузнецк"}
 
-# 🆕 ОБНОВЛЕННЫЙ СПИСОК RSS-ЛЕНТ (добавлены рабочие kuzbass.media и vse42.ru)
+# Список RSS-лент для Новокузнецка
 NK_RSS_FEEDS = [
     "https://ria.ru/export/rss2/index.xml",
     "http://www.kuzbassfm.ru/rss/news.xml",
@@ -102,8 +109,8 @@ def is_text_image(image_bytes):
         if len(clean_text) > 40:
             print(f"    [Отклонено: картинка с текстом] Распознано {len(clean_text)} символов.")
             return True
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"    ⚠️ Ошибка OCR: {e}")
     return False
 
 # --- УСИЛЕННАЯ ДЕДУПЛИКАЦИЯ ---
@@ -217,7 +224,8 @@ def extract_direct_video_url(url):
         if matches: return html.unescape(matches[0]).replace('\\/', '/')
         if 't.me/' in url and '?embed' not in url:
             return extract_direct_video_url(url.split('?')[0] + '?embed=1')
-    except: pass
+    except Exception as e:
+        print(f"    ⚠️ Ошибка извлечения видео: {e}")
     return None
 
 def extract_image_from_url(url):
@@ -238,7 +246,8 @@ def extract_image_from_url(url):
             if src and not src.startswith('data:'):
                 full_url = urljoin(url, src)
                 return full_url
-    except: pass
+    except Exception as e:
+        print(f"    ⚠️ Ошибка извлечения картинки: {e}")
     return None
 
 # --- Приоритет городов ---
@@ -258,10 +267,14 @@ def get_tg_web_videos(channel_name, now):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         resp = requests.get(url, timeout=10, headers=headers)
-        if resp.status_code != 200: return []
+        if resp.status_code != 200: 
+            print(f"  [{channel_name}] HTTP {resp.status_code}")
+            return []
         soup = BeautifulSoup(resp.text, "html.parser")
         posts = soup.select(".tgme_widget_message[data-post]")
-        if not posts: return []
+        if not posts: 
+            print(f"  [{channel_name}] Постов не найдено")
+            return []
         print(f"  [{channel_name}] Найдено постов: {len(posts)}")
         
         for post in reversed(posts):
@@ -304,7 +317,8 @@ def get_tg_web_videos(channel_name, now):
                 "link": f"https://t.me/{pid}", "text_hash": th, "channel": channel_name
             })
     except Exception as e:
-        print(f"Ошибка видео {channel_name}: {e}")
+        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА видео {channel_name}: {e}")
+        traceback.print_exc()
     return videos
 
 def get_tg_web_photos(channel_name, now):
@@ -358,7 +372,9 @@ def get_tg_web_photos(channel_name, now):
                 "media_type": "photo", "media_url": p_url,
                 "link": f"https://t.me/{pid}", "text_hash": th, "channel": channel_name
             })
-    except: pass
+    except Exception as e:
+        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА фото {channel_name}: {e}")
+        traceback.print_exc()
     return photos
 
 # --- Парсинг RSS для Новокузнецка ---
@@ -465,7 +481,8 @@ def get_novokuznetsk_rss_candidates(now):
             print(f"  [{feed_url[:40]}...] Всего: {entries_count} | Города: {city_matches} | Без медиа: {drop_no_media} | Старые: {drop_old} | Реклама: {drop_ad} | Короткие: {drop_short} | Дубли: {drop_dup} | Подошло: {candidates_found}")
             
         except Exception as e:
-            print(f"  Ошибка RSS {feed_url}: {e}")
+            print(f"❌ ОШИБКА RSS {feed_url}: {e}")
+            traceback.print_exc()
     return candidates
 
 # --- Обработка видео ---
@@ -502,7 +519,10 @@ def process_video(video_bytes, is_nk=False):
         if os.path.exists(tthumb): 
             with open(tthumb, 'rb') as f: thumb_bytes = f.read()
         return out_bytes, thumb_bytes
-    except: return None, None
+    except Exception as e:
+        print(f"❌ ОШИБКА FFMPEG: {e}")
+        traceback.print_exc()
+        return None, None
     finally:
         for p in [tin_path, tout, tthumb]:
             if 'p' in locals() and os.path.exists(p): os.remove(p)
@@ -528,7 +548,9 @@ def send_video_tg(video_url, caption, chat_id, is_nk=False):
             if is_nk: save_posted_nk_video(video_url)
             else: save_posted_video(video_hash)
             return True
-    except: pass
+    except Exception as e:
+        print(f"❌ ОШИБКА ОТПРАВКИ ВИДЕО TG: {e}")
+        traceback.print_exc()
     return False
 
 def send_photo_tg(photo_url, caption, chat_id, is_nk=False):
@@ -550,7 +572,9 @@ def send_photo_tg(photo_url, caption, chat_id, is_nk=False):
             if is_nk: save_posted_nk_photo(photo_url)
             else: save_posted_photo(photo_url)
             return True
-    except: pass
+    except Exception as e:
+        print(f"❌ ОШИБКА ОТПРАВКИ ФОТО TG: {e}")
+        traceback.print_exc()
     return False
 
 def send_to_telegram(text, media_type, media_url, channel_id=None, signature=None, is_nk=False):
@@ -611,7 +635,10 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, is
             except: pass
             if not token: return False
             attachments.append({"type": "image", "payload": {"token": token}})
-    except: return False
+    except Exception as e:
+        print(f"❌ ОШИБКА ПОДГОТОВКИ МЕДИА MAX: {e}")
+        traceback.print_exc()
+        return False
         
     if not attachments: return False
     payload = {"text": clean_text, "format": "markdown", "attachments": attachments}
@@ -623,6 +650,13 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, is
                 err = r.json()
                 if err.get("code") == "attachment.not.ready" and attempt < 2: time.sleep((attempt + 1) * 10); continue
                 return False
-        except: 
+        except Exception as e: 
             if attempt == 2: return False
-            time
+            time.sleep(10)
+    return False
+
+# --- ИИ ---
+def call_groq(prompt):
+    if not GROQ_API_KEY: return ""
+    try:
+        r =
