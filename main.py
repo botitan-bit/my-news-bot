@@ -111,7 +111,7 @@ def clean_text_junk(text):
     text = re.sub(r'https?://\S+', '', text) # Убираем ссылки
     text = re.sub(r'@\w+', '', text) # Убираем упоминания
     # Убираем призывы подписаться и прочий мусор
-    text = re.sub(r'(?i)\b(подписаться|подписывайтесь|подпишись|читать далее|читать полностью|источник|tg\s*\|\s*max|t\.me/\S+)\b', '', text)
+    text = re.sub(r'(?i)\b(подписаться|подписывайтесь|подпишись|читать далее|читать полностью|источник|tg\s*\|\s*max|t\.me/\S+|прямой эфир|смотрите видео|смотрите далее)\b', '', text)
     # Убираем лишние точки и пробелы
     text = re.sub(r'\s+', ' ', text).strip()
     text = re.sub(r'^[\.\,\-\:\s]+', '', text)
@@ -302,7 +302,6 @@ def extract_image_from_url(url):
         if resp.status_code != 200: return None
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # Ищем ТОЛЬКО главную картинку статьи, чтобы не тащить случайный мусор
         og_img = soup.select_one('meta[property="og:image"]')
         if og_img and og_img.get("content"):
             img_url = normalize_url(og_img.get("content"), url)
@@ -505,7 +504,6 @@ def get_novokuznetsk_rss_candidates(now):
                             media_type = 'photo'
                             break
                 
-                # Если в фиде нет картинки, идем на сайт, но берем ТОЛЬКО og:image
                 if not media_url and link:
                     fetched_img = extract_image_from_url(link)
                     if fetched_img:
@@ -636,240 +634,4 @@ def send_to_telegram(text, media_type, media_url, channel_id=None, signature=Non
     if signature is None: signature = SIGNATURE_TG
     full_text = f"{text}\n\n{signature}"
     
-    if media_type == 'video' and media_url:
-        return send_video_tg(media_url, full_text, channel_id, is_nk)
-    elif media_type == 'photo' and media_url:
-        return send_photo_tg(media_url, full_text, channel_id, title, is_nk)
-    return False
-
-def send_to_max(text, media_type, media_url, channel_id=None, signature=None, title="", is_nk=False):
-    if channel_id is None: channel_id = MAX_CHANNEL_ID
-    if signature is None: signature = SIGNATURE_MAX
-    if not MAX_BOT_TOKEN or not channel_id or media_type not in ('video', 'photo') or not media_url: return False
-    
-    clean_text = text.replace('<b>', '**').replace('</b>', '**')
-    clean_text = f"{html.unescape(clean_text).strip()}\n\n{signature}"
-    headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
-    attachments = []
-    
-    try:
-        if media_type == 'video':
-            direct_url = extract_direct_video_url(media_url)
-            if not direct_url: return False
-            vr = requests.get(direct_url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://t.me/'}, timeout=60, allow_redirects=True, verify=False)
-            if len(vr.content) < 100 * 1024 or 'video/' not in vr.headers.get('Content-Type', '') or len(vr.content) > 250 * 1024 * 1024: return False
-            vdata, _ = process_video(vr.content, is_nk)
-            if vdata is None: return False
-            up = requests.post("https://platform-api2.max.ru/uploads?type=video", headers={"Authorization": MAX_BOT_TOKEN}, timeout=15, verify=False)
-            ud = up.json()
-            if not (ud.get("url") and ud.get("token")): return False
-            ur = requests.post(ud["url"], headers={"Authorization": MAX_BOT_TOKEN}, files={'data': ('video.mp4', vdata, 'video/mp4')}, timeout=180)
-            if ur.status_code in [200, 201]:
-                time.sleep(10)
-                attachments.append({"type": "video", "payload": {"token": ud["token"]}})
-            else: return False
-        elif media_type == 'photo':
-            pr = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60, allow_redirects=True, verify=False)
-            if 'image' not in pr.headers.get('Content-Type', '') or len(pr.content) > 10 * 1024 * 1024: return False
-            if is_text_image(pr.content, title): return False
-            up = requests.post("https://platform-api2.max.ru/uploads?type=image", headers={"Authorization": MAX_BOT_TOKEN}, timeout=15, verify=False)
-            ud = up.json()
-            if not ud.get("url"): return False
-            ur = requests.post(ud["url"], headers={"Authorization": MAX_BOT_TOKEN}, files={'data': ('photo.jpg', pr.content, 'image/jpeg')}, timeout=60)
-            if ur.status_code not in [200, 201]: return False
-            token = None
-            try:
-                rj = ur.json()
-                if "photos" in rj:
-                    for _, v in rj["photos"].items():
-                        if isinstance(v, dict) and "token" in v: token = v["token"]; break
-                elif "token" in rj: token = rj["token"]
-            except: pass
-            if not token: return False
-            attachments.append({"type": "image", "payload": {"token": token}})
-    except Exception as e:
-        print(f"❌ ОШИБКА ПОДГОТОВКИ МЕДИА MAX: {e}")
-        return False
-
-    if not attachments: return False
-    payload = {"text": clean_text, "format": "markdown", "attachments": attachments}
-    for attempt in range(3):
-        try:
-            r = requests.post(f"https://platform-api2.max.ru/messages?chat_id={channel_id}", headers=headers, json=payload, timeout=20, verify=False)
-            if r.status_code == 200: return True
-            elif r.status_code == 400:
-                err = r.json()
-                if err.get("code") == "attachment.not.ready" and attempt < 2: time.sleep((attempt + 1) * 10); continue
-                return False
-        except Exception as e:
-            if attempt == 2: return False
-            time.sleep(10)
-    return False
-
-def call_groq(prompt):
-    if not GROQ_API_KEY: return ""
-    try:
-        r = requests.post("https://api.groq.com/openai/v1/chat/completions",
-                          headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-                          json={"model": "openai/gpt-oss-120b", "messages": [{"role": "user", "content": prompt}]}, timeout=15)
-        r.raise_for_status()
-        return r.json()['choices'][0]['message']['content'].strip()
-    except Exception as e:
-        print(f"⚠️ Ошибка Groq: {e}")
-        return ""
-
-def make_hybrid_post(title, summary):
-    # 1. Глубокая очистка заголовка
-    clean_title = clean_text_junk(title)
-    
-    if len(clean_title) > 100:
-        clean_title = clean_title[:100].strip() + "..."
-        
-    if not clean_title:
-        clean_title = "Новость"
-
-    # 2. Глубокая очистка текста
-    clean_summary = clean_text_junk(summary)
-
-    # 3. Убираем заголовок из начала текста, чтобы не было дубля
-    if clean_title and clean_summary.startswith(clean_title):
-        clean_summary = clean_summary[len(clean_title):].strip()
-
-    if not clean_summary or len(clean_summary) < 10:
-        return f"<b>{clean_title}</b>"
-
-    # 4. Отдаем в ИИ (только текст, заголовок запрещен)
-    prompt = f"""Ты — редактор. Сделай краткую сводку текста ниже.
-1. Сохрани все факты, имена, цифры.
-2. Убери "воду", ссылки, рекламу.
-3. Максимальная длина: 400-500 символов.
-4. Если текст уже короткий, просто верни его как есть.
-5. НЕ пиши заголовок. Только текст.
-6. Запрещены эмодзи.
-ТЕКСТ:
-{clean_summary}"""
-    
-    ai_text = call_groq(prompt)
-    if not ai_text:
-        ai_text = clean_summary
-        if len(ai_text) > 800:
-            ai_text = ai_text[:800] + "..."
-            
-    ai_text = html.escape(ai_text.strip())
-    
-    # Если вдруг ИИ все равно продублировал заголовок в тексте
-    if ai_text.lower().startswith(clean_title.lower()):
-        ai_text = ai_text[len(clean_title):].strip()
-        
-    return f"<b>{clean_title}</b>\n\n{ai_text}"
-
-def process_novokuznetsk(tg_videos, tg_photos):
-    if not TG_NK_CHANNEL_ID and not MAX_NK_CHANNEL_ID: return
-    now = datetime.now(timezone.utc)
-    nk_candidates = []
-    posted_nk_videos = get_posted_nk_videos()
-    posted_nk_photos = get_posted_nk_photos()
-    posted_nk_hashes = get_posted_nk_hashes()
-    recent_nk_titles = get_recent_nk_titles()
-    for v in tg_videos:
-        if any(k in v['summary'].lower() for k in NK_KEYWORDS):
-            if v['media_url'] in posted_nk_videos: continue
-            if is_duplicate_text(v['summary'], posted_nk_hashes): continue
-            if is_duplicate_title(v['title'], recent_nk_titles): continue
-            v['priority'] = get_nk_priority(v['summary'])
-            v['source_priority'] = 0
-            nk_candidates.append(v)
-    for p in tg_photos:
-        if any(k in p['summary'].lower() for k in NK_KEYWORDS):
-            if p['media_url'] in posted_nk_photos: continue
-            if is_duplicate_text(p['summary'], posted_nk_hashes): continue
-            if is_duplicate_title(p['title'], recent_nk_titles): continue
-            p['priority'] = get_nk_priority(p['summary'])
-            p['source_priority'] = 0
-            nk_candidates.append(p)
-    nk_candidates.extend(get_novokuznetsk_rss_candidates(now))
-    if not nk_candidates:
-        print("\nНовокузнецк: после фильтрации ничего не осталось.")
-        return
-    nk_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['priority'], x['source_priority'], x['age_hours']))
-    seen = set()
-    unique_nk = []
-    for c in nk_candidates:
-        if c['text_hash'] in seen: continue
-        seen.add(c['text_hash'])
-        unique_nk.append(c)
-    print(f"\n=== Новости Новокузнецка (К публикации: {len(unique_nk)}) ===")
-    for c in unique_nk[:NK_MAX_ATTEMPTS]:
-        print(f"Кандидат ({c['media_type']}, Приоритет {c['priority']}): {c['title'][:50]}")
-        
-        body = make_hybrid_post(c['title'], c['summary'])
-            
-        tg_ok = False
-        if TG_NK_CHANNEL_ID:
-            tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], channel_id=TG_NK_CHANNEL_ID, signature=SIGNATURE_NK_TG, title=c['title'], is_nk=True)
-            print(f"Новокузнецк TG: {'OK' if tg_ok else 'FAIL'}")
-        max_ok = False
-        if MAX_NK_CHANNEL_ID:
-            max_ok = send_to_max(body, c['media_type'], c['media_url'], channel_id=MAX_NK_CHANNEL_ID, signature=SIGNATURE_NK_MAX, title=c['title'], is_nk=True)
-            print(f"Новокузнецк MAX: {'OK' if max_ok else 'FAIL'}")
-        if tg_ok or max_ok:
-            save_posted_nk_hash(c['text_hash'])
-            save_nk_published_title(c['title'])
-            return
-
-def main():
-    ensure_state_files_exist()
-    now = datetime.now(timezone.utc)
-    print("\n=== Сбор данных из Telegram ===")
-    all_videos = []
-    all_photos = []
-    for ch in TG_CHANNELS:
-        all_videos.extend(get_tg_web_videos(ch, now))
-        all_photos.extend(get_tg_web_photos(ch, now))
-    print(f"Собрано (сырых): {len(all_videos)} видео, {len(all_photos)} фото.")
-
-    process_novokuznetsk(all_videos, all_photos)
-
-    print("\n=== Основной канал ===")
-    main_candidates = all_videos + all_photos
-    main_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['age_hours']))
-
-    posted_hashes = get_posted_hashes()
-    posted_photos_urls = get_posted_photos()
-    recent_titles = get_recent_titles()
-
-    seen = set()
-    unique_main = []
-    for c in main_candidates:
-        if c['text_hash'] in seen: continue
-        if c['media_type'] == 'photo' and c['media_url'] in posted_photos_urls: continue
-        if is_duplicate_text(c['summary'], posted_hashes): continue
-        if is_duplicate_title(c['title'], recent_titles): continue
-        seen.add(c['text_hash'])
-        unique_main.append(c)
-
-    final_candidates = unique_main
-
-    if final_candidates:
-        print(f"🔥 Найдено {len(final_candidates)} кандидатов для основного канала.")
-        for c in final_candidates[:5]:
-            print(f"\nКандидат: {c['title']} ({c['media_type']})")
-            
-            body = make_hybrid_post(c['title'], c['summary'])
-                
-            tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], title=c['title'])
-            print(f"Telegram: {'OK' if tg_ok else 'FAIL'}")
-            if not tg_ok: continue
-            save_posted_link(c['link'])
-            save_published_title(c['title'])
-            save_posted_hash(c['text_hash'])
-            max_ok = send_to_max(body, c['media_type'], c['media_url'], title=c['title'])
-            print(f"MAX: {'OK' if max_ok else 'FAIL'}")
-            print("\n🎉 Готово!")
-            return
-    else:
-        print("❌ Для основного канала ничего нового не найдено.")
-    sys.exit(0)
-
-if __name__ == "__main__":
-    main()
+   
