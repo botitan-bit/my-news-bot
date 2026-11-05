@@ -102,6 +102,17 @@ def ensure_state_files_exist():
         if not os.path.exists(file):
             open(file, 'a').close()
 
+def normalize_url(url, base=""):
+    if not url: return None
+    if url.startswith('//'): return 'https:' + url
+    if not url.startswith('http'): return urljoin(base, url)
+    return url
+
+def is_bad_image_url(url):
+    if not url: return True
+    lower = url.lower()
+    return any(k in lower for k in ['banner', 'reklama', 'ad_', 'adv', 'logo', 'icon', 'avatar', 'pixel', 'stub'])
+
 def is_text_image(image_bytes, title_text=""):
     try:
         img = Image.open(BytesIO(image_bytes))
@@ -251,7 +262,6 @@ def is_ad(text): return is_ad_with_reason(text) is not None
 def extract_direct_video_url(url):
     headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://t.me/'}
     try:
-        # ДОБАВЛЕН verify=False
         resp = requests.get(url, headers=headers, timeout=30, allow_redirects=True, verify=False)
         ctype = resp.headers.get('Content-Type', '')
         if 'video/' in ctype: return url
@@ -272,18 +282,26 @@ def extract_direct_video_url(url):
 def extract_image_from_url(url):
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        # ДОБАВЛЕН verify=False
         resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True, verify=False)
         if resp.status_code != 200: return None
         soup = BeautifulSoup(resp.text, "html.parser")
+        
         og_img = soup.select_one('meta[property="og:image"]')
-        if og_img and og_img.get("content"): return og_img.get("content")
+        if og_img and og_img.get("content"):
+            img_url = normalize_url(og_img.get("content"), url)
+            if img_url and not is_bad_image_url(img_url): return img_url
+            
         tw_img = soup.select_one('meta[name="twitter:image"]')
-        if tw_img and tw_img.get("content"): return tw_img.get("content")
+        if tw_img and tw_img.get("content"):
+            img_url = normalize_url(tw_img.get("content"), url)
+            if img_url and not is_bad_image_url(img_url): return img_url
+            
         for img in soup.find_all('img'):
             src = img.get('src') or img.get('data-src') or img.get('data-original')
             if src and not src.startswith('data:'):
-                return urljoin(url, src)
+                img_url = normalize_url(src, url)
+                if img_url and not is_bad_image_url(img_url):
+                    return img_url
     except Exception as e: print(f"    ⚠️ Ошибка извлечения картинки: {e}")
     return None
 
@@ -421,49 +439,60 @@ def get_novokuznetsk_rss_candidates(now):
                 if age_hours > 24:
                     drop_old += 1
                     continue
+                
                 media_url = None
                 media_type = None
+                link = entry.get('link', '')
+
+                # 1. Ищем видео
                 if 'media_content' in entry:
                     for m in entry.media_content:
-                        if m.get('type', '').startswith('video'): media_url = m.get('url'); media_type = 'video'; break
+                        if m.get('type', '').startswith('video'): media_url = normalize_url(m.get('url'), link); media_type = 'video'; break
                 if not media_url and 'links' in entry:
-                    for link in entry.links:
-                        if link.get('rel') == 'enclosure' and link.get('type', '').startswith('video'): media_url = link.get('href'); media_type = 'video'; break
-                if not media_url:
-                    if 'media_content' in entry:
-                        for m in entry.media_content:
-                            if m.get('type', '').startswith('image'): media_url = m.get('url'); media_type = 'photo'; break
-                    if not media_url and 'media_thumbnail' in entry:
-                        for m in entry.media_thumbnail:
-                            if m.get('url'): media_url = m.get('url'); media_type = 'photo'; break
-                    if not media_url and 'links' in entry:
-                        for link in entry.links:
-                            if link.get('rel') == 'enclosure' and link.get('type', '').startswith('image'): media_url = link.get('href'); media_type = 'photo'; break
+                    for l in entry.links:
+                        if l.get('rel') == 'enclosure' and l.get('type', '').startswith('video'): media_url = normalize_url(l.get('href'), link); media_type = 'video'; break
                 
-                if not media_url and entry.get('link'):
-                    fetched_img = extract_image_from_url(entry.get('link'))
-                    if fetched_img:
-                        media_url = fetched_img
-                        media_type = 'photo'
-
+                # 2. Ищем картинку в RSS (перебираем, пока не найдем нормальную)
+                if not media_url:
+                    for m in entry.get('media_content', []):
+                        if m.get('type', '').startswith('image'):
+                            u = normalize_url(m.get('url'), link)
+                            if u and not is_bad_image_url(u): media_url = u; media_type = 'photo'; break
+                    if not media_url:
+                        for m in entry.get('media_thumbnail', []):
+                            u = normalize_url(m.get('url'), link)
+                            if u and not is_bad_image_url(u): media_url = u; media_type = 'photo'; break
+                    if not media_url and 'links' in entry:
+                        for l in entry.links:
+                            if l.get('rel') == 'enclosure' and l.get('type', '').startswith('image'):
+                                u = normalize_url(l.get('href'), link)
+                                if u and not is_bad_image_url(u): media_url = u; media_type = 'photo'; break
+                
+                # 3. Ищем картинку в html тексте summary
                 if not media_url and summary:
                     soup = BeautifulSoup(summary, 'html.parser')
                     for img in soup.find_all('img'):
                         src = img.get('src', '')
-                        if not src or src.startswith('data:'): continue
                         parent_a = img.find_parent('a')
                         href = parent_a.get('href', '') if parent_a else ''
-                        lower_src = src.lower()
-                        lower_href = href.lower()
-                        if any(k in lower_src or k in lower_href for k in ['banner', 'reklama', 'ad_', 'adv', 'click']):
-                            continue
-                        media_url = src
+                        u = normalize_url(src, link)
+                        if u and not is_bad_image_url(u) and not is_bad_image_url(href):
+                            media_url = u
+                            media_type = 'photo'
+                            break
+                
+                # 4. Если совсем нет, идем на сайт статьи
+                if not media_url and link:
+                    fetched_img = extract_image_from_url(link)
+                    if fetched_img:
+                        media_url = fetched_img
                         media_type = 'photo'
-                        break
 
+                # ЕСЛИ НЕТ МЕДИА - ПРОПУСКАЕМ (выполняем ваше условие)
                 if not media_url:
                     drop_no_media += 1
                     continue
+
                 if media_type == 'video' and media_url in posted_videos:
                     drop_dup += 1
                     continue
@@ -484,7 +513,7 @@ def get_novokuznetsk_rss_candidates(now):
                 candidates.append({
                     'title': title, 'summary': clean_text, 'age_hours': age_hours,
                     'media_type': media_type, 'media_url': media_url,
-                    'link': entry.get('link', ''), 'text_hash': th, 'channel': 'rss',
+                    'link': link, 'text_hash': th, 'channel': 'rss',
                     'priority': get_nk_priority(full_text),
                     'source_priority': 1 if "novokuznetsk-news" in feed_url else 0
                 })
@@ -538,7 +567,6 @@ def send_video_tg(video_url, caption, chat_id, is_nk=False):
     direct_url = extract_direct_video_url(video_url)
     if not direct_url: return False
     try:
-        # ДОБАВЛЕН verify=False
         resp = requests.get(direct_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60, verify=False)
         ctype = resp.headers.get('Content-Type', '')
         video_data = resp.content
@@ -562,7 +590,6 @@ def send_video_tg(video_url, caption, chat_id, is_nk=False):
 def send_photo_tg(photo_url, caption, chat_id, title="", is_nk=False):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     try:
-        # ДОБАВЛЕН verify=False
         resp = requests.get(photo_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=30, verify=False)
         ctype = resp.headers.get('Content-Type', '')
         if 'image' not in ctype: return False
@@ -585,26 +612,29 @@ def send_to_telegram(text, media_type, media_url, channel_id=None, signature=Non
     if channel_id is None: channel_id = TELEGRAM_CHANNEL_ID
     if signature is None: signature = SIGNATURE_TG
     full_text = f"{text}\n\n{signature}"
-    if media_type == 'video' and media_url: return send_video_tg(media_url, full_text, channel_id, is_nk)
-    elif media_type == 'photo' and media_url: return send_photo_tg(media_url, full_text, channel_id, title, is_nk)
+    
+    if media_type == 'video' and media_url:
+        return send_video_tg(media_url, full_text, channel_id, is_nk)
+    elif media_type == 'photo' and media_url:
+        return send_photo_tg(media_url, full_text, channel_id, title, is_nk)
     return False
 
 def send_to_max(text, media_type, media_url, channel_id=None, signature=None, title="", is_nk=False):
     if channel_id is None: channel_id = MAX_CHANNEL_ID
     if signature is None: signature = SIGNATURE_MAX
     if not MAX_BOT_TOKEN or not channel_id or media_type not in ('video', 'photo') or not media_url: return False
+    
     clean_text = text.replace('<b>', '**').replace('</b>', '**')
     clean_text = f"{html.unescape(clean_text).strip()}\n\n{signature}"
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     attachments = []
+    
     try:
         if media_type == 'video':
             direct_url = extract_direct_video_url(media_url)
             if not direct_url: return False
-            # ДОБАВЛЕН verify=False
             vr = requests.get(direct_url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://t.me/'}, timeout=60, allow_redirects=True, verify=False)
-            if len(vr.content) < 100 * 1024 or 'video/' not in vr.headers.get('Content-Type', ''): return False
-            if len(vr.content) > 250 * 1024 * 1024: return False
+            if len(vr.content) < 100 * 1024 or 'video/' not in vr.headers.get('Content-Type', '') or len(vr.content) > 250 * 1024 * 1024: return False
             vdata, _ = process_video(vr.content, is_nk)
             if vdata is None: return False
             up = requests.post("https://platform-api2.max.ru/uploads?type=video", headers={"Authorization": MAX_BOT_TOKEN}, timeout=15, verify=False)
@@ -616,7 +646,6 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
                 attachments.append({"type": "video", "payload": {"token": ud["token"]}})
             else: return False
         elif media_type == 'photo':
-            # ДОБАВЛЕН verify=False
             pr = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60, allow_redirects=True, verify=False)
             if 'image' not in pr.headers.get('Content-Type', '') or len(pr.content) > 10 * 1024 * 1024: return False
             if is_text_image(pr.content, title): return False
@@ -637,8 +666,8 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
             attachments.append({"type": "image", "payload": {"token": token}})
     except Exception as e:
         print(f"❌ ОШИБКА ПОДГОТОВКИ МЕДИА MAX: {e}")
-        traceback.print_exc()
         return False
+
     if not attachments: return False
     payload = {"text": clean_text, "format": "markdown", "attachments": attachments}
     for attempt in range(3):
@@ -740,8 +769,9 @@ def process_novokuznetsk(tg_videos, tg_photos):
         print(f"Кандидат ({c['media_type']}, Приоритет {c['priority']}): {c['title'][:50]}")
         body = rewrite_with_ai(c['title'], c['summary'], 'novokuznetsk')
         if not body:
-            print("    ⚠️ rewrite_with_ai вернул None — пропуск")
-            continue
+            print("    ⚠️ rewrite_with_ai вернул None — используем оригинальный текст")
+            body = f"<b>{c['title']}</b>\n\n{c['summary']}"
+            
         tg_ok = False
         if TG_NK_CHANNEL_ID:
             tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], channel_id=TG_NK_CHANNEL_ID, signature=SIGNATURE_NK_TG, title=c['title'], is_nk=True)
@@ -793,7 +823,9 @@ def main():
         for c in final_candidates[:5]:
             print(f"\nКандидат: {c['title']} ({c['media_type']})")
             body = rewrite_with_ai(c['title'], c['summary'], c.get('channel', ''))
-            if not body: continue
+            if not body: 
+                body = f"<b>{c['title']}</b>\n\n{c['summary']}"
+                
             tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], title=c['title'])
             print(f"Telegram: {'OK' if tg_ok else 'FAIL'}")
             if not tg_ok: continue
