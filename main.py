@@ -95,13 +95,44 @@ def ensure_state_files_exist():
 def clean_text_junk(text):
     if not text: return ""
     text = html.unescape(text)
+    
+    # 1. Отсекаем всё, что идет после вертикальной черты, если там есть слова MAX, TG, Телеграм, или похоже на юзернейм/канал
+    text = re.split(r'\|\s*(?=.*?(?:MAX|МАКС|TG|ТГ|Телеграм|Telegram|@|деньги\s+в\s+эфире|наш\s+мах))', text, flags=re.IGNORECASE)[0]
+
+    # 2. УМНАЯ ОЧИСТКА ХВОСТОВ (перечисляем фразы, которые часто пишут в конце)
+    patterns = [
+        r'💰\s*деньги\s+в\s+эфире',
+        r'📺\s*наш\s+max',
+        r'наш\s+max',
+        r'😊\s*tg\s+замедляют',
+        r'видосы\s+и\s+оперативные\s+новости',
+        r'смотри\s+в\s+нашем',
+        r'смотрите\s+в\s+нашем',
+        r'подписывайтесь\s+на\s+наш',
+        r'подписывайся\s+на\s+наш',
+        r'переходите\s+в\s+наш',
+        r'переходи\s+в\s+наш',
+        r'все\s+самое\s+важное',
+        r'больше\s+новостей\s+на',
+        r'читайте\s+также',
+        r'источник\s*:',
+        r'наши\s+соцсети',
+        r'мы\s+в\s+телеграм',
+        r'мы\s+в\s+макс',
+        r'тг\s*:\s*@\w+',
+    ]
+    for p in patterns:
+        text = re.split(r'(?i)' + p, text)[0]
+        
     text = re.sub(r'<[^>]+>', ' ', text)
     text = re.sub(r'https?://\S+', '', text)
     text = re.sub(r'@\w+', '', text)
-    text = re.sub(r'(?i)\b(подписаться|подписывайтесь|подпишись|читать далее|читать полностью|источник|tg\s*\|\s*max|t\.me/\S+|прямой эфир|смотрите видео|смотрите далее)\b', '', text)
+    
+    # 3. Удаляем одиночные эмодзи и спецсимволы в конце
+    text = re.sub(r'[\U00010000-\U0010ffff\|\-\=\>\<]\s*$', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
-    text = re.sub(r'^[\.\,\-\:\s]+', '', text)
-    text = re.sub(r'[\.\,\-\:\s]+$', '', text)
+    text = re.sub(r'^[\.\,\-\:\s\|]+', '', text)
+    text = re.sub(r'[\.\,\-\:\s\|]+$', '', text)
     return text
 
 def normalize_url(url, base=""):
@@ -120,7 +151,6 @@ def is_bad_image(image_bytes, title_text=""):
         img = Image.open(BytesIO(image_bytes))
         W, H = img.size
         
-        # Порог 300x200
         if W < 300 or H < 200:
             print(f"    [Отклонено: слишком маленькая] {W}x{H} (нужно 300x200)")
             return True
@@ -372,7 +402,10 @@ def get_tg_web_videos(channel_name, now):
             v_url = urljoin("https://t.me", v_url)
             txt = post.select_one(".tgme_widget_message_text")
             if not txt: continue
+            
             clean = txt.get_text("\n", strip=True)
+            clean = clean_text_junk(clean)
+            
             if len(clean) < 20: continue
             if is_ad(clean): continue
             
@@ -434,7 +467,10 @@ def get_tg_web_photos(channel_name, now):
             
             txt = post.select_one(".tgme_widget_message_text")
             if not txt: continue
+            
             clean = txt.get_text("\n", strip=True)
+            clean = clean_text_junk(clean)
+            
             if len(clean) < 20: continue
             if is_ad(clean): continue
             
@@ -570,6 +606,8 @@ def get_novokuznetsk_rss_candidates(now):
                     continue
                     
                 clean_text = BeautifulSoup(summary, 'html.parser').get_text(separator='\n', strip=True)
+                clean_text = clean_text_junk(clean_text)
+                
                 if len(clean_text) < 20:
                     drop_short += 1
                     continue
@@ -644,10 +682,9 @@ def send_to_telegram(text, media_type, media_url, channel_id=None, signature=Non
     
     full_text = f"{text}\n\n{signature}"
     
-    # ФИКС: Если текст длиннее лимита Телеграма (1024), оставляем ТОЛЬКО заголовок
     if len(full_text) > 1000:
         print("    ⚠️ Текст слишком длинный. Оставляем только заголовок.")
-        clean_title = title if title else text.split('\n')[0]
+        clean_title = clean_text_junk(title) if title else clean_text_junk(text.split('\n')[0])
         full_text = f"<b>{clean_title}</b>\n\n{signature}"
         
     if media_type == 'video' and media_url:
@@ -664,12 +701,9 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
     clean_text = text.replace('<b>', '**').replace('</b>', '**')
     full_text = f"{html.unescape(clean_text).strip()}\n\n{signature}"
     
-    # ФИКС: Если текст длиннее лимита, оставляем ТОЛЬКО заголовок
     if len(full_text) > 1000:
         print("    ⚠️ Текст слишком длинный (MAX). Оставляем только заголовок.")
-        clean_title = title.replace('<b>', '').replace('</b>', '').strip() if title else ""
-        if not clean_title and '\n' in text:
-            clean_title = text.split('\n')[0].replace('<b>', '').replace('</b>', '').strip()
+        clean_title = clean_text_junk(title) if title else clean_text_junk(text.split('\n')[0])
         full_text = f"**{clean_title}**\n\n{signature}"
 
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
