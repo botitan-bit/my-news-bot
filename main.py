@@ -71,7 +71,7 @@ TG_CHANNELS = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi", "zhest_
 
 NK_KEYWORDS = ["новокузнецк", "кузбасс", "кемерово", "белово", "прокопьевск", "ленинск-кузнецкий", "междуреченск", "мыски", "осинники", "киселевск", "юрга", "анжеро-судженск", "мариинск", "тайга", "гуьевск", "таштагол", "полысаево", "калтан", "березовский", "топки"]
 
-# РАСШИРЕННЫЙ СПИСОК РЕКЛАМЫ (добавлены банковские и коммерческие термины)
+# УСИЛЕННЫЙ СПИСОК РЕКЛАМЫ (добавлены банковские термины)
 AD_WORDS = [
     "реклама", "промокод", "скидка", "erid", "маркировка",
     "казино", "ставки", "криптовалюта", "инвестиции", "заработок",
@@ -79,8 +79,8 @@ AD_WORDS = [
     "спонсор", "распродажа", "бонус", "читать далее", "читать полностью", 
     "подарок", "бесплатно", "только сегодня", "успей", "торопись", "оформить заказ",
     "заказать", "купить", "магазин", "акция", "промо", "розыгрыш",
-    "партнерство", "партнёрство", "альянс", "кэшбэк", "депозит", "привилегии",
-    "альфа-банк", "сбер", "тинькофф", "втб", "росбанк", "банк", "кредит", "ипотека"
+    "партнерство", "партнёрство", "альянс", "кэшбэк", "кэшбек", "депозит", "привилегии",
+    "альфа", "альфа-банк", "альфа банк", "сбер", "сбербанк", "тинькофф", "т-банк", "втб", "росбанк", "банк", "кредит", "ипотека"
 ]
 
 IMG_AD_PHRASES = ["8-800", "8 800", "ооо", "реклама", "заказать", "erid", "промокод", "скидка", "змппсм", "агротрак"]
@@ -116,16 +116,16 @@ def normalize_url(url, base=""):
 def is_bad_image_url(url):
     if not url: return True
     lower = url.lower()
-    return any(k in lower for k in ['banner', 'reklama', 'ad_', 'adv', 'logo', 'icon', 'avatar', 'pixel', 'stub'])
+    return any(k in lower for k in ['banner', 'reklama', 'ad_', 'adv', 'logo', 'icon', 'avatar', 'pixel', 'stub', 'thumb'])
 
 def is_bad_image(image_bytes, title_text=""):
     try:
         img = Image.open(BytesIO(image_bytes))
         W, H = img.size
         
-        # УВЕЛИЧИЛИ ЛИМИТ: теперь картинка должна быть минимум 600x400
-        if W < 600 or H < 400:
-            print(f"    [Отклонено: картинка слишком маленькая] {W}x{H} (нужно 600x400)")
+        # ТЕПЕРЬ ТРЕБУЕМ 800x600 (чтобы фото в ТГ выглядело крупно)
+        if W < 800 or H < 600:
+            print(f"    [Отклонено: слишком маленькая] {W}x{H} (нужно 800x600)")
             return True
 
         if W * H == 0: return True
@@ -180,7 +180,9 @@ def is_bad_image(image_bytes, title_text=""):
             print("    [Отклонено: картинка с большим текстом]")
             return True
     except Exception as e:
-        pass
+        print(f"    [Отклонено: ошибка чтения картинки] {e}")
+        return True # ЕСЛИ НЕ МОЖЕМ ПРОЧИТАТЬ - СЧИТАЕМ ПЛОХОЙ
+        
     return False
 
 def get_text_hash(text):
@@ -248,7 +250,11 @@ def save_nk_published_title(t):
 def is_ad(text):
     lower = text.lower()
     for w in AD_WORDS:
-        if re.search(r'(?<![а-яёa-z])' + re.escape(w), lower): return True
+        # Жесткий поиск целых слов, чтобы "банк" не срабатывал на "банкротство"
+        pattern = r'(?<![а-яёa-z])' + re.escape(w) + r'(?![а-яёa-z])'
+        if re.search(pattern, lower): 
+            print(f"    [Найдена реклама: '{w}']")
+            return True
     return False
 
 def is_valid_image_url(url, title):
@@ -259,7 +265,8 @@ def is_valid_image_url(url, title):
         if len(resp.content) == 0 or len(resp.content) > 10 * 1024 * 1024: return False
         if is_bad_image(resp.content, title): return False
         return True
-    except:
+    except Exception as e:
+        print(f"    [Ошибка скачивания фото] {e}")
         return False
 
 def extract_image_from_url(url):
@@ -335,9 +342,7 @@ def get_tg_web_photos(channel_name, now):
             clean = txt.get_text("\n", strip=True)
             if len(clean) < 20: continue
             
-            if is_ad(clean): 
-                print(f"    [Отклонено: Реклама в TG-канале]")
-                continue
+            if is_ad(clean): continue
             
             th = get_text_hash(clean)
             pid = post.get("data-post", "")
@@ -475,7 +480,8 @@ TEXT: {title} {summary[:200]}"""
         ai_keywords = "news, breaking news, russia"
         
     ai_keywords = re.sub(r'[^a-zA-Z0-9\s,]', '', ai_keywords)
-    prompt_text = f"news photography, {ai_keywords}, realistic, high quality, cinematic lighting"
+    # Делаем запрос более реалистичным
+    prompt_text = f"high quality news photography, {ai_keywords}, realistic, 4k, detailed, cinematic lighting"
     encoded_prompt = urllib.parse.quote(prompt_text)
     img_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=768&nologo=true&seed={random.randint(1, 999999)}"
     
@@ -583,6 +589,7 @@ def make_hybrid_post(title, summary):
     if not clean_summary or len(clean_summary) < 10:
         return f"<b>{clean_title}</b>"
 
+    # Если текст короткий, не мучаем ИИ, публикуем как есть
     if len(clean_summary) < 100:
         return f"<b>{clean_title}</b>\n\n{clean_summary}"
 
@@ -713,7 +720,17 @@ def main():
             print(f"\nКандидат: {c['title'][:50]}...")
             body = make_hybrid_post(c['title'], c['summary'])
             
-            tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], title=c['title'])
+            # Для основного канала тоже проверяем картинку
+            media_url = c['media_url']
+            if not media_url or not is_valid_image_url(media_url, c['title']):
+                print("    ⚠️ Картинка маленькая или плохая. Генерируем ИИ...")
+                media_url = generate_ai_image(c['title'], c['summary'])
+                
+            if not media_url:
+                print("    ❌ Не удалось получить картинку. Пропускаем.")
+                continue
+                
+            tg_ok = send_to_telegram(body, 'photo', media_url, title=c['title'])
             print(f"Telegram: {'OK' if tg_ok else 'FAIL'}")
             if not tg_ok: continue
             
@@ -721,7 +738,7 @@ def main():
             save_published_title(c['title'])
             save_posted_hash(c['text_hash'])
             
-            max_ok = send_to_max(body, c['media_type'], c['media_url'], title=c['title'])
+            max_ok = send_to_max(body, 'photo', media_url, title=c['title'])
             print(f"MAX: {'OK' if max_ok else 'FAIL'}")
             print("\n🎉 Готово!")
             return
