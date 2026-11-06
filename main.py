@@ -9,6 +9,7 @@ import time
 import io
 import urllib3
 import hashlib
+import random
 import tempfile
 import traceback
 import urllib.parse
@@ -114,11 +115,18 @@ def is_bad_image_url(url):
     lower = url.lower()
     return any(k in lower for k in ['banner', 'reklama', 'ad_', 'adv', 'logo', 'icon', 'avatar', 'pixel', 'stub'])
 
-def is_text_image(image_bytes, title_text=""):
+# НОВАЯ ПРОВЕРКА: Теперь функция отклоняет ещё и картинки маленького размера
+def is_bad_image(image_bytes, title_text=""):
     try:
         img = Image.open(BytesIO(image_bytes))
         W, H = img.size
-        if W * H == 0: return False
+        
+        # Отклоняем мелкие картинки
+        if W < 400 or H < 300:
+            print(f"    [Отклонено: картинка слишком маленькая] {W}x{H}")
+            return True
+
+        if W * H == 0: return True
 
         img_gray = img.convert('L')
         stat = ImageStat.Stat(img_gray)
@@ -163,7 +171,7 @@ def is_text_image(image_bytes, title_text=""):
         lower_text = clean_text.lower()
         for phrase in IMG_AD_PHRASES:
             if phrase in lower_text: 
-                print("    [Отклонено: рекламный баннер на картинке]")
+                print("    [Отклонено: рекламный баннер]")
                 return True
 
         if len(clean_text) > 150 and coverage > 0.25: 
@@ -240,6 +248,18 @@ def is_ad(text):
     for w in AD_WORDS:
         if re.search(r'(?<![а-яёa-z])' + re.escape(w), lower): return True
     return False
+
+# НОВАЯ ФУНКЦИЯ: Проверка скачиваемой картинки (возвращает True, если картинка хорошая)
+def is_valid_image_url(url, title):
+    if not url: return False
+    try:
+        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=REQUEST_TIMEOUT, verify=False)
+        if resp.status_code != 200 or 'image' not in resp.headers.get('Content-Type', ''): return False
+        if len(resp.content) == 0 or len(resp.content) > 10 * 1024 * 1024: return False
+        if is_bad_image(resp.content, title): return False
+        return True
+    except:
+        return False
 
 def extract_image_from_url(url):
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -344,8 +364,7 @@ def get_novokuznetsk_rss_candidates(now):
             resp = requests.get(feed_url, timeout=REQUEST_TIMEOUT, verify=False, headers={'User-Agent': 'Mozilla/5.0'})
             feed = feedparser.parse(resp.content)
             
-            if not feed.entries:
-                continue
+            if not feed.entries: continue
                 
             entries_count = len(feed.entries)
             city_matches = 0
@@ -400,7 +419,6 @@ def get_novokuznetsk_rss_candidates(now):
                 if not media_url and link:
                     media_url = extract_image_from_url(link)
 
-                # Если медиа так и нет, оставляем None (бот сам сгенерирует картинку)
                 if media_url and media_url in posted_photos:
                     drop_dup += 1
                     continue
@@ -436,35 +454,27 @@ def call_groq(prompt):
     try:
         r = requests.post("https://api.groq.com/openai/v1/chat/completions",
                           headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-                          json={"model": "openai/gpt-oss-120b", "messages": [{"role": "user", "content": prompt}]}, timeout=15)
+                          json={"model": "openai/gpt-oss-120b", "temperature": 0.1, "messages": [{"role": "user", "content": prompt}]}, timeout=15)
         r.raise_for_status()
         return r.json()['choices'][0]['message']['content'].strip()
     except Exception as e:
         return ""
 
-# ============ НОВАЯ ФУНКЦИЯ: ГЕНЕРАЦИЯ КАРТИНКИ ============
 def generate_ai_image(title, summary):
     print("    🎨 Генерация картинки через ИИ...")
-    # 1. Просим Groq выделить ключевые слова на английском
     prompt = f"""Extract 3-4 main keywords in English for a news illustration based on this text.
 Output ONLY keywords separated by commas, nothing else. No text, no quotes.
 TEXT: {title} {summary[:200]}"""
     
     ai_keywords = call_groq(prompt).strip()
     if not ai_keywords or len(ai_keywords) < 3:
-        # Если ИИ не ответил, берем просто заголовок на английском (грубый перевод)
         ai_keywords = "news, breaking news, russia"
         
-    # Убираем лишние кавычки и переносы
     ai_keywords = re.sub(r'[^a-zA-Z0-9\s,]', '', ai_keywords)
-    
-    # 2. Формируем ссылку для генерации (Pollinations.ai - бесплатно, без ключей)
     prompt_text = f"news photography, {ai_keywords}, realistic, high quality, cinematic lighting"
     encoded_prompt = urllib.parse.quote(prompt_text)
-    
     img_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=768&nologo=true&seed={random.randint(1, 999999)}"
     
-    # Проверяем, что картинка скачалась
     try:
         resp = requests.get(img_url, timeout=30)
         if resp.status_code == 200 and 'image' in resp.headers.get('Content-Type', ''):
@@ -472,10 +482,7 @@ TEXT: {title} {summary[:200]}"""
             return img_url
     except Exception as e:
         print(f"    ⚠️ Ошибка генерации картинки: {e}")
-        
     return None
-
-# ===========================================================
 
 def send_photo_tg(photo_url, caption, chat_id, title="", is_nk=False):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
@@ -486,9 +493,8 @@ def send_photo_tg(photo_url, caption, chat_id, title="", is_nk=False):
         photo_data = resp.content
         if len(photo_data) == 0 or len(photo_data) > 10 * 1024 * 1024: return False
         
-        # Для сгенерированных картинок пропускаем OCR, так как там нет текста
         if "pollinations" not in photo_url:
-            if is_text_image(photo_data, title): return False
+            if is_bad_image(photo_data, title): return False
         
         files = {'photo': ('photo.jpg', photo_data, 'image/jpeg')}
         data = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"}
@@ -524,7 +530,7 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
         pr = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=REQUEST_TIMEOUT, allow_redirects=True, verify=False)
         if 'image' not in pr.headers.get('Content-Type', '') or len(pr.content) > 10 * 1024 * 1024: return False
         if "pollinations" not in media_url:
-            if is_text_image(pr.content, title): return False
+            if is_bad_image(pr.content, title): return False
             
         up = requests.post("https://platform-api2.max.ru/uploads?type=image", headers={"Authorization": MAX_BOT_TOKEN}, timeout=REQUEST_TIMEOUT, verify=False)
         ud = up.json()
@@ -573,11 +579,15 @@ def make_hybrid_post(title, summary):
     if not clean_summary or len(clean_summary) < 10:
         return f"<b>{clean_title}</b>"
 
+    # Если текст короткий, не мучаем ИИ, публикуем как есть
+    if len(clean_summary) < 100:
+        return f"<b>{clean_title}</b>\n\n{clean_summary}"
+
     prompt = f"""Ты — редактор. Сделай краткую сводку текста ниже.
 1. Сохрани все факты, имена, цифры.
 2. Убери "воду", ссылки, рекламу.
 3. Максимальная длина: 400-500 символов.
-4. Если текст уже короткий, просто верни его как есть.
+4. ОБЯЗАТЕЛЬНО заверши текст полным предложением. Не обрывай текст на полуслове.
 5. НЕ пиши заголовок. Только текст.
 6. Запрещены эмодзи.
 ТЕКСТ:
@@ -586,7 +596,13 @@ def make_hybrid_post(title, summary):
     ai_text = call_groq(prompt)
     if not ai_text:
         ai_text = clean_summary
-        if len(ai_text) > 800: ai_text = ai_text[:800] + "..."
+        if len(ai_text) > 800:
+            ai_text = ai_text[:800]
+            last_dot = max(ai_text.rfind('.'), ai_text.rfind('!'), ai_text.rfind('?'))
+            if last_dot > 400:
+                ai_text = ai_text[:last_dot+1]
+            else:
+                ai_text += "..."
             
     ai_text = html.escape(ai_text.strip())
     if ai_text.lower().startswith(clean_title.lower()):
@@ -633,13 +649,14 @@ def process_novokuznetsk(tg_photos):
         print(f"Кандидат (Приоритет {c['priority']}): {c['title'][:50]}")
         body = make_hybrid_post(c['title'], c['summary'])
         
+        # Проверяем, что картинка подходит по размеру и качеству
         media_url = c['media_url']
-        # Если нет нормальной картинки, генерируем свою!
-        if not media_url:
+        if not media_url or not is_valid_image_url(media_url, c['title']):
+            print("    ⚠️ Исходная картинка плохая или маленькая. Генерируем новую...")
             media_url = generate_ai_image(c['title'], c['summary'])
             
         if not media_url:
-            print("    ❌ Не удалось получить картинку (ни исходную, ни сгенерированную). Пропускаем.")
+            print("    ❌ Не удалось получить картинку. Пропускаем.")
             continue
             
         tg_ok = False
