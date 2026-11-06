@@ -71,13 +71,16 @@ TG_CHANNELS = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi", "zhest_
 
 NK_KEYWORDS = ["новокузнецк", "кузбасс", "кемерово", "белово", "прокопьевск", "ленинск-кузнецкий", "междуреченск", "мыски", "осинники", "киселевск", "юрга", "анжеро-судженск", "мариинск", "тайга", "гуьевск", "таштагол", "полысаево", "калтан", "березовский", "топки"]
 
+# РАСШИРЕННЫЙ СПИСОК РЕКЛАМЫ (добавлены банковские и коммерческие термины)
 AD_WORDS = [
     "реклама", "промокод", "скидка", "erid", "маркировка",
     "казино", "ставки", "криптовалюта", "инвестиции", "заработок",
     "подписывайтесь", "подписаться", "подпишись", "перейти по ссылке", 
     "спонсор", "распродажа", "бонус", "читать далее", "читать полностью", 
     "подарок", "бесплатно", "только сегодня", "успей", "торопись", "оформить заказ",
-    "заказать", "купить", "магазин", "акция", "промо", "розыгрыш"
+    "заказать", "купить", "магазин", "акция", "промо", "розыгрыш",
+    "партнерство", "партнёрство", "альянс", "кэшбэк", "депозит", "привилегии",
+    "альфа-банк", "сбер", "тинькофф", "втб", "росбанк", "банк", "кредит", "ипотека"
 ]
 
 IMG_AD_PHRASES = ["8-800", "8 800", "ооо", "реклама", "заказать", "erid", "промокод", "скидка", "змппсм", "агротрак"]
@@ -115,15 +118,14 @@ def is_bad_image_url(url):
     lower = url.lower()
     return any(k in lower for k in ['banner', 'reklama', 'ad_', 'adv', 'logo', 'icon', 'avatar', 'pixel', 'stub'])
 
-# НОВАЯ ПРОВЕРКА: Теперь функция отклоняет ещё и картинки маленького размера
 def is_bad_image(image_bytes, title_text=""):
     try:
         img = Image.open(BytesIO(image_bytes))
         W, H = img.size
         
-        # Отклоняем мелкие картинки
-        if W < 400 or H < 300:
-            print(f"    [Отклонено: картинка слишком маленькая] {W}x{H}")
+        # УВЕЛИЧИЛИ ЛИМИТ: теперь картинка должна быть минимум 600x400
+        if W < 600 or H < 400:
+            print(f"    [Отклонено: картинка слишком маленькая] {W}x{H} (нужно 600x400)")
             return True
 
         if W * H == 0: return True
@@ -249,7 +251,6 @@ def is_ad(text):
         if re.search(r'(?<![а-яёa-z])' + re.escape(w), lower): return True
     return False
 
-# НОВАЯ ФУНКЦИЯ: Проверка скачиваемой картинки (возвращает True, если картинка хорошая)
 def is_valid_image_url(url, title):
     if not url: return False
     try:
@@ -333,7 +334,10 @@ def get_tg_web_photos(channel_name, now):
             if not txt: continue
             clean = txt.get_text("\n", strip=True)
             if len(clean) < 20: continue
-            if is_ad(clean): continue
+            
+            if is_ad(clean): 
+                print(f"    [Отклонено: Реклама в TG-канале]")
+                continue
             
             th = get_text_hash(clean)
             pid = post.get("data-post", "")
@@ -579,7 +583,6 @@ def make_hybrid_post(title, summary):
     if not clean_summary or len(clean_summary) < 10:
         return f"<b>{clean_title}</b>"
 
-    # Если текст короткий, не мучаем ИИ, публикуем как есть
     if len(clean_summary) < 100:
         return f"<b>{clean_title}</b>\n\n{clean_summary}"
 
@@ -649,10 +652,9 @@ def process_novokuznetsk(tg_photos):
         print(f"Кандидат (Приоритет {c['priority']}): {c['title'][:50]}")
         body = make_hybrid_post(c['title'], c['summary'])
         
-        # Проверяем, что картинка подходит по размеру и качеству
         media_url = c['media_url']
         if not media_url or not is_valid_image_url(media_url, c['title']):
-            print("    ⚠️ Исходная картинка плохая или маленькая. Генерируем новую...")
+            print("    ⚠️ Исходная картинка плохая, маленькая или отсутствует. Генерируем новую...")
             media_url = generate_ai_image(c['title'], c['summary'])
             
         if not media_url:
