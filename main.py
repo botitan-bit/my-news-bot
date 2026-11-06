@@ -296,38 +296,33 @@ def extract_image_from_url(url):
         if resp.status_code != 200: return None
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # 1. Главная картинка (og:image)
+        # 1. Ищем og:image
         og_img = soup.select_one('meta[property="og:image"]')
         if og_img and og_img.get("content"):
             img_url = normalize_url(og_img.get("content"), url)
             if img_url and not is_bad_image_url(img_url): return img_url
             
-        tw_img = soup.select_one('meta[name="twitter:image"]')
-        if tw_img and tw_img.get("content"):
-            img_url = normalize_url(tw_img.get("content"), url)
-            if img_url and not is_bad_image_url(img_url): return img_url
-            
-        # 2. Ищем картинку внутри текста статьи (обычно там нормальные фото)
-        article = soup.select_one('article') or soup.select_one('.article-body') or soup.select_one('.news-text')
-        if article:
-            for img in article.find_all('img'):
-                src = img.get('src') or img.get('data-src') or img.get('data-original')
-                if not src or src.startswith('data:'): continue
-                img_url = normalize_url(src, url)
-                if img_url and not is_bad_image_url(img_url):
-                    return img_url
-
-        # 3. Если вообще ничего нет, перебираем все теги <img> на странице
+        # 2. Ищем самую большую картинку в HTML
+        best_img = None
+        max_area = 0
         for img in soup.find_all('img'):
             src = img.get('src') or img.get('data-src') or img.get('data-original')
             if not src or src.startswith('data:'): continue
+            
+            img_url = normalize_url(src, url)
+            if not img_url or is_bad_image_url(img_url): continue
+            
             w = img.get('width', '')
             h = img.get('height', '')
-            if w and w.isdigit() and int(w) < 200: continue
-            if h and h.isdigit() and int(h) < 200: continue
-            img_url = normalize_url(src, url)
-            if img_url and not is_bad_image_url(img_url):
-                return img_url
+            area = 0
+            if w and h and str(w).isdigit() and str(h).isdigit():
+                area = int(w) * int(h)
+                
+            if area > max_area or not best_img:
+                max_area = area
+                best_img = img_url
+                
+        return best_img
     except Exception as e: 
         pass
     return None
@@ -378,11 +373,12 @@ def get_tg_web_videos(channel_name, now):
             th = get_text_hash(clean)
             pid = post.get("data-post", "")
             
+            # УВЕЛИЧЕН ЛИМИТ ЗАГОЛОВКА ДО 150 СИМВОЛОВ
             first_sentence_match = re.search(r'^([^.!?\n]+[.!?])', clean)
-            if first_sentence_match and len(first_sentence_match.group(1)) < 120:
+            if first_sentence_match and len(first_sentence_match.group(1)) < 150:
                 title = first_sentence_match.group(1).strip()
             else:
-                title = clean[:80].strip() + "..."
+                title = clean[:150].strip() + "..."
                 
             videos.append({
                 "title": title, "summary": clean, "age_hours": age,
@@ -431,11 +427,12 @@ def get_tg_web_photos(channel_name, now):
             th = get_text_hash(clean)
             pid = post.get("data-post", "")
             
+            # УВЕЛИЧЕН ЛИМИТ ЗАГОЛОВКА ДО 150 СИМВОЛОВ
             first_sentence_match = re.search(r'^([^.!?\n]+[.!?])', clean)
-            if first_sentence_match and len(first_sentence_match.group(1)) < 120:
+            if first_sentence_match and len(first_sentence_match.group(1)) < 150:
                 title = first_sentence_match.group(1).strip()
             else:
-                title = clean[:80].strip() + "..."
+                title = clean[:150].strip() + "..."
                 
             photos.append({
                 "title": title, "summary": clean, "age_hours": age,
@@ -526,18 +523,23 @@ def get_novokuznetsk_rss_candidates(now):
                             media_type = 'photo'
                             break
 
-                # ВАЖНО: Если картинка из RSS плохая или её нет, идем на сайт статьи
+                # Если картинка из RSS плохая или её нет, идем на сайт статьи
                 if media_type == 'photo' and media_url:
                     if not is_valid_image_url(media_url, title):
                         print(f"    ⚠️ Картинка из RSS плохая. Ищем на сайте...")
                         media_url = extract_image_from_url(link)
-                        if not media_url:
+                        # Обязательно проверяем новую картинку!
+                        if not media_url or not is_valid_image_url(media_url, title):
                             drop_no_media += 1
                             continue
                 elif not media_url and link:
                     media_url = extract_image_from_url(link)
                     if media_url:
                         media_type = 'photo'
+                        # Проверяем новую картинку!
+                        if not is_valid_image_url(media_url, title):
+                            drop_no_media += 1
+                            continue
                     else:
                         drop_no_media += 1
                         continue
@@ -710,7 +712,7 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
 
 def make_hybrid_post(title, summary):
     clean_title = clean_text_junk(title)
-    if len(clean_title) > 100: clean_title = clean_title[:100].strip() + "..."
+    if len(clean_title) > 150: clean_title = clean_title[:150].strip() + "..."
     if not clean_title: clean_title = "Новость"
 
     clean_summary = clean_text_junk(summary)
