@@ -9,10 +9,8 @@ import time
 import io
 import urllib3
 import hashlib
-import random
 import tempfile
 import traceback
-import urllib.parse
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
@@ -122,7 +120,7 @@ def is_bad_image(image_bytes, title_text=""):
         img = Image.open(BytesIO(image_bytes))
         W, H = img.size
         
-        # Отклоняем картинки меньше 600x400
+        # Жесткое требование к размеру (600x400)
         if W < 600 or H < 400:
             print(f"    [Отклонено: слишком маленькая] {W}x{H} (нужно 600x400)")
             return True
@@ -222,6 +220,8 @@ def get_posted_hashes(): return load_lines("posted_hashes.txt")
 def save_posted_hash(h): append_line("posted_hashes.txt", h)
 def get_posted_links(): return load_lines("posted_news.txt")
 def save_posted_link(l): append_line("posted_news.txt", l)
+def get_posted_videos(): return load_lines("posted_videos.txt")
+def save_posted_video(u): append_line("posted_videos.txt", u)
 def get_posted_photos(): return load_lines("posted_images.txt")
 def save_posted_photo(u): append_line("posted_images.txt", u)
 def get_recent_titles(): return load_lines("published_titles.txt")
@@ -237,6 +237,8 @@ def get_posted_nk_hashes(): return load_lines("posted_nk_hashes.txt")
 def save_posted_nk_hash(h): append_line("posted_nk_hashes.txt", h)
 def get_posted_nk_photos(): return load_lines("posted_nk_images.txt")
 def save_posted_nk_photo(u): append_line("posted_nk_images.txt", u)
+def get_posted_nk_videos(): return load_lines("posted_nk_videos.txt")
+def save_posted_nk_video(u): append_line("posted_nk_videos.txt", u)
 def get_recent_nk_titles(): return load_lines("published_nk_titles.txt")
 
 def save_nk_published_title(t):
@@ -264,8 +266,28 @@ def is_valid_image_url(url, title):
         if is_bad_image(resp.content, title): return False
         return True
     except Exception as e:
-        print(f"    [Ошибка скачивания фото] {e}")
         return False
+
+def extract_direct_video_url(url):
+    headers = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://t.me/'}
+    try:
+        resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT, allow_redirects=True, verify=False)
+        ctype = resp.headers.get('Content-Type', '')
+        if 'video/' in ctype: return url
+        html_text = html.unescape(resp.text)
+        soup = BeautifulSoup(html_text, "html.parser")
+        v_tag = soup.select_one("video")
+        if v_tag and (v_tag.get("src") or v_tag.get("data-src")): return v_tag.get("src") or v_tag.get("data-src")
+        s_tag = soup.select_one("video source")
+        if s_tag and (s_tag.get("src") or s_tag.get("data-src")): return s_tag.get("src") or s_tag.get("data-src")
+        meta_v = soup.select_one('meta[property="og:video"]')
+        if meta_v and meta_v.get("content"): return html.unescape(meta_v.get("content"))
+        matches = re.findall(r'(https?://[^\s"\'<>]+?\.(?:mp4|webm)[^\s"\'<>]*)', html_text)
+        if matches: return html.unescape(matches[0]).replace('\\/', '/')
+        if 't.me/' in url and '?embed' not in url: return extract_direct_video_url(url.split('?')[0] + '?embed=1')
+    except Exception as e: 
+        pass
+    return None
 
 def extract_image_from_url(url):
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -305,12 +327,65 @@ def get_nk_priority(text):
     if any(city in text_lower for city in NK_KEYWORDS[2:]): return 3
     return 99
 
+def get_tg_web_videos(channel_name, now):
+    videos = []
+    url = f"https://t.me/s/{channel_name}"
+    try:
+        resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
+        if resp.status_code != 200: return []
+        soup = BeautifulSoup(resp.text, "html.parser")
+        posts = soup.select(".tgme_widget_message[data-post]")
+        if not posts: return []
+        
+        for post in reversed(posts):
+            tt = post.select_one(".tgme_widget_message_date time")
+            if not tt: continue
+            try: pub = datetime.fromisoformat(tt.get("datetime").replace("Z", "+00:00"))
+            except: pub = now
+            age = (now - pub).total_seconds() / 3600
+            if age > 24: continue
+            
+            v_url = None
+            vt = post.select_one("video")
+            if vt: v_url = vt.get("src") or vt.get("data-src")
+            if not v_url:
+                st = post.select_one("video source")
+                if st: v_url = st.get("src") or st.get("data-src")
+            if not v_url:
+                vl = post.select_one("a.tgme_widget_message_video_player")
+                if vl: v_url = vl.get("href")
+            if not v_url: continue
+            
+            v_url = urljoin("https://t.me", v_url)
+            txt = post.select_one(".tgme_widget_message_text")
+            if not txt: continue
+            clean = txt.get_text("\n", strip=True)
+            if len(clean) < 20: continue
+            if is_ad(clean): continue
+            
+            th = get_text_hash(clean)
+            pid = post.get("data-post", "")
+            
+            first_sentence_match = re.search(r'^([^.!?\n]+[.!?])', clean)
+            if first_sentence_match and len(first_sentence_match.group(1)) < 120:
+                title = first_sentence_match.group(1).strip()
+            else:
+                title = clean[:80].strip() + "..."
+                
+            videos.append({
+                "title": title, "summary": clean, "age_hours": age,
+                "media_type": "video", "media_url": v_url,
+                "link": f"https://t.me/{pid}", "text_hash": th, "channel": channel_name
+            })
+    except Exception as e:
+        pass
+    return videos
+
 def get_tg_web_photos(channel_name, now):
     photos = []
     url = f"https://t.me/s/{channel_name}"
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers=headers, verify=False)
+        resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
         if resp.status_code != 200: return []
         soup = BeautifulSoup(resp.text, "html.parser")
         posts = soup.select(".tgme_widget_message[data-post]")
@@ -339,7 +414,6 @@ def get_tg_web_photos(channel_name, now):
             if not txt: continue
             clean = txt.get_text("\n", strip=True)
             if len(clean) < 20: continue
-            
             if is_ad(clean): continue
             
             th = get_text_hash(clean)
@@ -375,11 +449,11 @@ def get_novokuznetsk_rss_candidates(now):
                 
             entries_count = len(feed.entries)
             city_matches = 0
-            drop_no_media = 0
             drop_old = 0
             drop_ad = 0
             drop_short = 0
             drop_dup = 0
+            drop_no_media = 0
             candidates_found = 0
             
             for entry in feed.entries:
@@ -400,19 +474,33 @@ def get_novokuznetsk_rss_candidates(now):
                 media_url = None
                 link = entry.get('link', '')
 
+                # Ищем видео в RSS
                 for m in entry.get('media_content', []):
-                    if m.get('type', '').startswith('image'):
+                    if m.get('type', '').startswith('video'):
                         u = normalize_url(m.get('url'), link)
-                        if u and not is_bad_image_url(u): media_url = u; break
+                        if u: media_url = u; media_type = 'video'; break
+                if not media_url and 'links' in entry:
+                    for l in entry.links:
+                        if l.get('rel') == 'enclosure' and l.get('type', '').startswith('video'):
+                            u = normalize_url(l.get('href'), link)
+                            if u: media_url = u; media_type = 'video'; break
+
+                # Ищем картинку в RSS
+                if not media_url:
+                    for m in entry.get('media_content', []):
+                        if m.get('type', '').startswith('image'):
+                            u = normalize_url(m.get('url'), link)
+                            if u and not is_bad_image_url(u): media_url = u; media_type = 'photo'; break
                 if not media_url:
                     for m in entry.get('media_thumbnail', []):
                         u = normalize_url(m.get('url'), link)
-                        if u and not is_bad_image_url(u): media_url = u; break
+                        if u and not is_bad_image_url(u): media_url = u; media_type = 'photo'; break
                 if not media_url and 'links' in entry:
                     for l in entry.links:
                         if l.get('rel') == 'enclosure' and l.get('type', '').startswith('image'):
                             u = normalize_url(l.get('href'), link)
-                            if u and not is_bad_image_url(u): media_url = u; break
+                            if u and not is_bad_image_url(u): media_url = u; media_type = 'photo'; break
+                
                 if not media_url and summary:
                     soup = BeautifulSoup(summary, 'html.parser')
                     for img in soup.find_all('img'):
@@ -422,11 +510,21 @@ def get_novokuznetsk_rss_candidates(now):
                         u = normalize_url(src, link)
                         if u and not is_bad_image_url(u) and not is_bad_image_url(href):
                             media_url = u
+                            media_type = 'photo'
                             break
+                
+                # Если в фиде пусто, идем на страницу
                 if not media_url and link:
                     media_url = extract_image_from_url(link)
+                    if media_url:
+                        media_type = 'photo'
 
-                if media_url and media_url in posted_photos:
+                # Если медиа так и нет — пропускаем
+                if not media_url:
+                    drop_no_media += 1
+                    continue
+
+                if media_url in posted_photos:
                     drop_dup += 1
                     continue
                     
@@ -444,7 +542,7 @@ def get_novokuznetsk_rss_candidates(now):
                     
                 candidates.append({
                     'title': title, 'summary': clean_text, 'age_hours': age_hours,
-                    'media_type': 'photo' if media_url else 'text',
+                    'media_type': media_type,
                     'media_url': media_url,
                     'link': link, 'text_hash': th, 'channel': 'rss',
                     'priority': get_nk_priority(full_text),
@@ -467,51 +565,37 @@ def call_groq(prompt):
     except Exception as e:
         return ""
 
-# ОБНОВЛЕННАЯ ФУНКЦИЯ: Добавлена страховка в виде заглушки
-def generate_ai_image(title, summary):
-    print("    🎨 Генерация картинки через ИИ...")
+def send_video_tg(video_url, caption, chat_id, is_nk=False):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
+    direct_url = extract_direct_video_url(video_url)
+    if not direct_url: return False
     try:
-        prompt = f"""Extract 3-4 main keywords in English for a news illustration based on this text.
-Output ONLY keywords separated by commas, nothing else.
-TEXT: {title} {summary[:200]}"""
+        resp = requests.get(direct_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60, verify=False)
+        if resp.status_code != 200: return False
+        video_data = resp.content
+        if len(video_data) == 0 or len(video_data) > 50 * 1024 * 1024: return False
         
-        ai_keywords = call_groq(prompt).strip()
-        if not ai_keywords or len(ai_keywords) < 3:
-            ai_keywords = "news, breaking news, russia"
-            
-        ai_keywords = re.sub(r'[^a-zA-Z0-9\s,]', '', ai_keywords)
-        prompt_text = f"high quality news photography, {ai_keywords}, realistic, 4k, detailed, cinematic lighting"
-        encoded_prompt = urllib.parse.quote(prompt_text)
-        
-        # Увеличили таймаут ожидания до 60 секунд
-        img_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=768&nologo=true&seed={random.randint(1, 999999)}"
-        
-        resp = requests.get(img_url, timeout=60, verify=False)
-        if resp.status_code == 200 and 'image' in resp.headers.get('Content-Type', ''):
-            print(f"    ✅ Картинка сгенерирована! Ключевые слова: {ai_keywords}")
-            return img_url
-            
+        files = {'video': ('video.mp4', video_data, 'video/mp4')}
+        data = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML", "supports_streaming": True}
+        r = requests.post(url, data=data, files=files, timeout=90)
+        if r.status_code == 200:
+            if is_nk: save_posted_nk_video(video_url)
+            else: save_posted_video(video_url)
+            return True
     except Exception as e:
-        print(f"    ⚠️ Ошибка генерации картинки: {e}")
-        
-    # Если нейросеть упала или GitHub ее заблокировал
-    print("    ⚠️ ИИ не смог создать картинку. Берем надежную заглушку...")
-    return f"https://picsum.photos/1024/768?random={random.randint(1, 10000)}"
+        print(f"❌ ОШИБКА ОТПРАВКИ ВИДЕО TG: {e}")
+    return False
 
 def send_photo_tg(photo_url, caption, chat_id, title="", is_nk=False):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     try:
-        # Если это сгенерированная картинка или заглушка, ждем дольше
-        t_out = 60 if "pollinations" in photo_url or "picsum" in photo_url else REQUEST_TIMEOUT
-        resp = requests.get(photo_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=t_out, verify=False)
-        
+        resp = requests.get(photo_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=REQUEST_TIMEOUT, verify=False)
         ctype = resp.headers.get('Content-Type', '')
         if 'image' not in ctype: return False
         photo_data = resp.content
         if len(photo_data) == 0 or len(photo_data) > 10 * 1024 * 1024: return False
         
-        if "pollinations" not in photo_url and "picsum" not in photo_url:
-            if is_bad_image(photo_data, title): return False
+        if is_bad_image(photo_data, title): return False
         
         files = {'photo': ('photo.jpg', photo_data, 'image/jpeg')}
         data = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"}
@@ -529,7 +613,9 @@ def send_to_telegram(text, media_type, media_url, channel_id=None, signature=Non
     if signature is None: signature = SIGNATURE_TG
     full_text = f"{text}\n\n{signature}"
     
-    if media_url:
+    if media_type == 'video' and media_url:
+        return send_video_tg(media_url, full_text, channel_id, is_nk)
+    elif media_type == 'photo' and media_url:
         return send_photo_tg(media_url, full_text, channel_id, title, is_nk)
     return False
 
@@ -544,31 +630,45 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
     attachments = []
     
     try:
-        t_out = 60 if "pollinations" in media_url or "picsum" in media_url else REQUEST_TIMEOUT
-        pr = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=t_out, allow_redirects=True, verify=False)
-        if 'image' not in pr.headers.get('Content-Type', '') or len(pr.content) > 10 * 1024 * 1024: return False
-        
-        if "pollinations" not in media_url and "picsum" not in media_url:
-            if is_bad_image(pr.content, title): return False
+        if media_type == 'video':
+            direct_url = extract_direct_video_url(media_url)
+            if not direct_url: return False
+            vr = requests.get(direct_url, headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://t.me/'}, timeout=60, allow_redirects=True, verify=False)
+            if len(vr.content) < 100 * 1024 or 'video/' not in vr.headers.get('Content-Type', '') or len(vr.content) > 250 * 1024 * 1024: return False
             
-        up = requests.post("https://platform-api2.max.ru/uploads?type=image", headers={"Authorization": MAX_BOT_TOKEN}, timeout=REQUEST_TIMEOUT, verify=False)
-        ud = up.json()
-        if not ud.get("url"): return False
-        
-        ur = requests.post(ud["url"], headers={"Authorization": MAX_BOT_TOKEN}, files={'data': ('photo.jpg', pr.content, 'image/jpeg')}, timeout=REQUEST_TIMEOUT)
-        if ur.status_code not in [200, 201]: return False
-        
-        token = None
-        try:
-            rj = ur.json()
-            if "photos" in rj:
-                for _, v in rj["photos"].items():
-                    if isinstance(v, dict) and "token" in v: token = v["token"]; break
-            elif "token" in rj: token = rj["token"]
-        except: pass
-        if not token: return False
-        
-        attachments.append({"type": "image", "payload": {"token": token}})
+            up = requests.post("https://platform-api2.max.ru/uploads?type=video", headers={"Authorization": MAX_BOT_TOKEN}, timeout=15, verify=False)
+            ud = up.json()
+            if not (ud.get("url") and ud.get("token")): return False
+            
+            ur = requests.post(ud["url"], headers={"Authorization": MAX_BOT_TOKEN}, files={'data': ('video.mp4', vr.content, 'video/mp4')}, timeout=180)
+            if ur.status_code in [200, 201]:
+                time.sleep(10)
+                attachments.append({"type": "video", "payload": {"token": ud["token"]}})
+            else: return False
+            
+        elif media_type == 'photo':
+            pr = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=REQUEST_TIMEOUT, allow_redirects=True, verify=False)
+            if 'image' not in pr.headers.get('Content-Type', '') or len(pr.content) > 10 * 1024 * 1024: return False
+            if is_bad_image(pr.content, title): return False
+                
+            up = requests.post("https://platform-api2.max.ru/uploads?type=image", headers={"Authorization": MAX_BOT_TOKEN}, timeout=15, verify=False)
+            ud = up.json()
+            if not ud.get("url"): return False
+            
+            ur = requests.post(ud["url"], headers={"Authorization": MAX_BOT_TOKEN}, files={'data': ('photo.jpg', pr.content, 'image/jpeg')}, timeout=60)
+            if ur.status_code not in [200, 201]: return False
+            
+            token = None
+            try:
+                rj = ur.json()
+                if "photos" in rj:
+                    for _, v in rj["photos"].items():
+                        if isinstance(v, dict) and "token" in v: token = v["token"]; break
+                elif "token" in rj: token = rj["token"]
+            except: pass
+            if not token: return False
+            
+            attachments.append({"type": "image", "payload": {"token": token}})
     except Exception as e:
         return False
 
@@ -628,16 +728,26 @@ def make_hybrid_post(title, summary):
         
     return f"<b>{clean_title}</b>\n\n{ai_text}"
 
-def process_novokuznetsk(tg_photos):
+def process_novokuznetsk(tg_videos, tg_photos):
     if not TG_NK_CHANNEL_ID and not MAX_NK_CHANNEL_ID: 
         return
         
     now = datetime.now(timezone.utc)
     nk_candidates = []
     posted_nk_photos = get_posted_nk_photos()
+    posted_nk_videos = get_posted_nk_videos()
     posted_nk_hashes = get_posted_nk_hashes()
     recent_nk_titles = get_recent_nk_titles()
     
+    for v in tg_videos:
+        if any(k in v['summary'].lower() for k in NK_KEYWORDS):
+            if v['media_url'] in posted_nk_videos: continue
+            if is_duplicate_text(v['summary'], posted_nk_hashes): continue
+            if is_duplicate_title(v['title'], recent_nk_titles): continue
+            v['priority'] = get_nk_priority(v['summary'])
+            v['source_priority'] = 0
+            nk_candidates.append(v)
+            
     for p in tg_photos:
         if any(k in p['summary'].lower() for k in NK_KEYWORDS):
             if p['media_url'] in posted_nk_photos: continue
@@ -653,7 +763,8 @@ def process_novokuznetsk(tg_photos):
         print("Новокузнецк: после фильтрации ничего не осталось.")
         return
         
-    nk_candidates.sort(key=lambda x: (x['priority'], x['source_priority'], x['age_hours']))
+    # Сортируем: сначала видео, потом по приоритету и возрасту
+    nk_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['priority'], x['source_priority'], x['age_hours']))
     
     seen = set()
     unique_nk = []
@@ -664,26 +775,23 @@ def process_novokuznetsk(tg_photos):
         
     print(f"\n=== Новости Новокузнецка (К публикации: {len(unique_nk)}) ===")
     for c in unique_nk[:NK_MAX_ATTEMPTS]:
-        print(f"Кандидат (Приоритет {c['priority']}): {c['title'][:50]}")
+        print(f"Кандидат ({c['media_type']}, Приоритет {c['priority']}): {c['title'][:50]}")
         body = make_hybrid_post(c['title'], c['summary'])
         
-        media_url = c['media_url']
-        if not media_url or not is_valid_image_url(media_url, c['title']):
-            print("    ⚠️ Исходная картинка плохая, маленькая или отсутствует. Генерируем новую...")
-            media_url = generate_ai_image(c['title'], c['summary'])
-            
-        if not media_url:
-            print("    ❌ Не удалось получить картинку. Пропускаем.")
-            continue
+        # Проверяем картинку перед отправкой (только для фото)
+        if c['media_type'] == 'photo':
+            if not is_valid_image_url(c['media_url'], c['title']):
+                print("    ⚠️ Исходная картинка плохая или маленькая. Пропускаем.")
+                continue
             
         tg_ok = False
         if TG_NK_CHANNEL_ID:
-            tg_ok = send_to_telegram(body, 'photo', media_url, channel_id=TG_NK_CHANNEL_ID, signature=SIGNATURE_NK_TG, title=c['title'], is_nk=True)
+            tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], channel_id=TG_NK_CHANNEL_ID, signature=SIGNATURE_NK_TG, title=c['title'], is_nk=True)
             print(f"Новокузнецк TG: {'OK' if tg_ok else 'FAIL'}")
             
         max_ok = False
         if MAX_NK_CHANNEL_ID:
-            max_ok = send_to_max(body, 'photo', media_url, channel_id=MAX_NK_CHANNEL_ID, signature=SIGNATURE_NK_MAX, title=c['title'], is_nk=True)
+            max_ok = send_to_max(body, c['media_type'], c['media_url'], channel_id=MAX_NK_CHANNEL_ID, signature=SIGNATURE_NK_MAX, title=c['title'], is_nk=True)
             print(f"Новокузнецк MAX: {'OK' if max_ok else 'FAIL'}")
             
         if tg_ok or max_ok:
@@ -695,28 +803,34 @@ def main():
     ensure_state_files_exist()
     now = datetime.now(timezone.utc)
     
-    print(">>> Сбор фото из Telegram...")
+    print(">>> Сбор видео и фото из Telegram...")
+    all_videos = []
     all_photos = []
     for ch in TG_CHANNELS:
+        all_videos.extend(get_tg_web_videos(ch, now))
         all_photos.extend(get_tg_web_photos(ch, now))
-    print(f"Собрано фото: {len(all_photos)}")
+    print(f"Собрано: {len(all_videos)} видео, {len(all_photos)} фото.")
 
     print(">>> Обработка Новокузнецка...")
-    process_novokuznetsk(all_photos)
+    process_novokuznetsk(all_videos, all_photos)
 
     print(">>> Обработка основного канала...")
-    main_candidates = all_photos
-    main_candidates.sort(key=lambda x: x['age_hours'])
+    main_candidates = all_videos + all_photos
+    
+    # Сначала видео, потом по свежести
+    main_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['age_hours']))
 
     posted_hashes = get_posted_hashes()
     posted_photos_urls = get_posted_photos()
+    posted_videos_urls = get_posted_videos()
     recent_titles = get_recent_titles()
 
     seen = set()
     unique_main = []
     for c in main_candidates:
         if c['text_hash'] in seen: continue
-        if c['media_url'] in posted_photos_urls: continue
+        if c['media_type'] == 'photo' and c['media_url'] in posted_photos_urls: continue
+        if c['media_type'] == 'video' and c['media_url'] in posted_videos_urls: continue
         if is_duplicate_text(c['summary'], posted_hashes): continue
         if is_duplicate_title(c['title'], recent_titles): continue
         seen.add(c['text_hash'])
@@ -725,19 +839,15 @@ def main():
     if unique_main:
         print(f"🔥 Найдено {len(unique_main)} кандидатов для основного канала.")
         for c in unique_main[:5]:
-            print(f"\nКандидат: {c['title'][:50]}...")
+            print(f"\nКандидат: {c['title'][:50]}... ({c['media_type']})")
             body = make_hybrid_post(c['title'], c['summary'])
             
-            media_url = c['media_url']
-            if not media_url or not is_valid_image_url(media_url, c['title']):
-                print("    ⚠️ Картинка маленькая или плохая. Генерируем ИИ...")
-                media_url = generate_ai_image(c['title'], c['summary'])
+            if c['media_type'] == 'photo':
+                if not is_valid_image_url(c['media_url'], c['title']):
+                    print("    ⚠️ Картинка маленькая или плохая. Пропускаем.")
+                    continue
                 
-            if not media_url:
-                print("    ❌ Не удалось получить картинку. Пропускаем.")
-                continue
-                
-            tg_ok = send_to_telegram(body, 'photo', media_url, title=c['title'])
+            tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], title=c['title'])
             print(f"Telegram: {'OK' if tg_ok else 'FAIL'}")
             if not tg_ok: continue
             
@@ -745,7 +855,7 @@ def main():
             save_published_title(c['title'])
             save_posted_hash(c['text_hash'])
             
-            max_ok = send_to_max(body, 'photo', media_url, title=c['title'])
+            max_ok = send_to_max(body, c['media_type'], c['media_url'], title=c['title'])
             print(f"MAX: {'OK' if max_ok else 'FAIL'}")
             print("\n🎉 Готово!")
             return
