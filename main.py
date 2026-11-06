@@ -120,9 +120,9 @@ def is_bad_image(image_bytes, title_text=""):
         img = Image.open(BytesIO(image_bytes))
         W, H = img.size
         
-        # Жесткое требование к размеру (600x400)
-        if W < 600 or H < 400:
-            print(f"    [Отклонено: слишком маленькая] {W}x{H} (нужно 600x400)")
+        # Порог 300x200
+        if W < 300 or H < 200:
+            print(f"    [Отклонено: слишком маленькая] {W}x{H} (нужно 300x200)")
             return True
 
         if W * H == 0: return True
@@ -290,19 +290,26 @@ def extract_direct_video_url(url):
     return None
 
 def extract_image_from_url(url):
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
     try:
         resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT, allow_redirects=True, verify=False)
         if resp.status_code != 200: return None
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        # 1. Ищем og:image
         og_img = soup.select_one('meta[property="og:image"]')
         if og_img and og_img.get("content"):
             img_url = normalize_url(og_img.get("content"), url)
             if img_url and not is_bad_image_url(img_url): return img_url
             
-        # 2. Ищем самую большую картинку в HTML
+        article = soup.select_one('article') or soup.select_one('.article-body') or soup.select_one('.news-text')
+        if article:
+            for img in article.find_all('img'):
+                src = img.get('src') or img.get('data-src') or img.get('data-original')
+                if not src or src.startswith('data:'): continue
+                img_url = normalize_url(src, url)
+                if img_url and not is_bad_image_url(img_url):
+                    return img_url
+
         best_img = None
         max_area = 0
         for img in soup.find_all('img'):
@@ -312,17 +319,16 @@ def extract_image_from_url(url):
             img_url = normalize_url(src, url)
             if not img_url or is_bad_image_url(img_url): continue
             
-            w = img.get('width', '')
-            h = img.get('height', '')
-            area = 0
-            if w and h and str(w).isdigit() and str(h).isdigit():
+            w = img.get('width', '0')
+            h = img.get('height', '0')
+            if str(w).isdigit() and str(h).isdigit():
                 area = int(w) * int(h)
-                
-            if area > max_area or not best_img:
-                max_area = area
-                best_img = img_url
-                
-        return best_img
+                if area > max_area:
+                    max_area = area
+                    best_img = img_url
+                    
+        if best_img and max_area > 10000: 
+            return best_img
     except Exception as e: 
         pass
     return None
@@ -373,12 +379,20 @@ def get_tg_web_videos(channel_name, now):
             th = get_text_hash(clean)
             pid = post.get("data-post", "")
             
-            # УВЕЛИЧЕН ЛИМИТ ЗАГОЛОВКА ДО 150 СИМВОЛОВ
-            first_sentence_match = re.search(r'^([^.!?\n]+[.!?])', clean)
-            if first_sentence_match and len(first_sentence_match.group(1)) < 150:
-                title = first_sentence_match.group(1).strip()
+            lines = [l.strip() for l in clean.split('\n') if l.strip()]
+            if len(lines) > 1:
+                title = lines[0]
             else:
-                title = clean[:150].strip() + "..."
+                first_sentence = re.search(r'^([^.!?\n]+[.!?])', clean)
+                if first_sentence and len(first_sentence.group(1)) < 120:
+                    title = first_sentence.group(1).strip()
+                else:
+                    title = clean[:80].strip()
+                    last_space = title.rfind(' ')
+                    if last_space > 40:
+                        title = title[:last_space] + "..."
+                    else:
+                        title += "..."
                 
             videos.append({
                 "title": title, "summary": clean, "age_hours": age,
@@ -427,12 +441,20 @@ def get_tg_web_photos(channel_name, now):
             th = get_text_hash(clean)
             pid = post.get("data-post", "")
             
-            # УВЕЛИЧЕН ЛИМИТ ЗАГОЛОВКА ДО 150 СИМВОЛОВ
-            first_sentence_match = re.search(r'^([^.!?\n]+[.!?])', clean)
-            if first_sentence_match and len(first_sentence_match.group(1)) < 150:
-                title = first_sentence_match.group(1).strip()
+            lines = [l.strip() for l in clean.split('\n') if l.strip()]
+            if len(lines) > 1:
+                title = lines[0]
             else:
-                title = clean[:150].strip() + "..."
+                first_sentence = re.search(r'^([^.!?\n]+[.!?])', clean)
+                if first_sentence and len(first_sentence.group(1)) < 120:
+                    title = first_sentence.group(1).strip()
+                else:
+                    title = clean[:80].strip()
+                    last_space = title.rfind(' ')
+                    if last_space > 40:
+                        title = title[:last_space] + "..."
+                    else:
+                        title += "..."
                 
             photos.append({
                 "title": title, "summary": clean, "age_hours": age,
@@ -484,7 +506,6 @@ def get_novokuznetsk_rss_candidates(now):
                 media_type = None
                 link = entry.get('link', '')
 
-                # Ищем видео в RSS
                 for m in entry.get('media_content', []):
                     if m.get('type', '').startswith('video'):
                         u = normalize_url(m.get('url'), link)
@@ -495,7 +516,6 @@ def get_novokuznetsk_rss_candidates(now):
                             u = normalize_url(l.get('href'), link)
                             if u: media_url = u; media_type = 'video'; break
 
-                # Ищем картинку в RSS
                 if not media_url:
                     for m in entry.get('media_content', []):
                         if m.get('type', '').startswith('image'):
@@ -523,12 +543,10 @@ def get_novokuznetsk_rss_candidates(now):
                             media_type = 'photo'
                             break
 
-                # Если картинка из RSS плохая или её нет, идем на сайт статьи
                 if media_type == 'photo' and media_url:
                     if not is_valid_image_url(media_url, title):
                         print(f"    ⚠️ Картинка из RSS плохая. Ищем на сайте...")
                         media_url = extract_image_from_url(link)
-                        # Обязательно проверяем новую картинку!
                         if not media_url or not is_valid_image_url(media_url, title):
                             drop_no_media += 1
                             continue
@@ -536,7 +554,6 @@ def get_novokuznetsk_rss_candidates(now):
                     media_url = extract_image_from_url(link)
                     if media_url:
                         media_type = 'photo'
-                        # Проверяем новую картинку!
                         if not is_valid_image_url(media_url, title):
                             drop_no_media += 1
                             continue
@@ -577,17 +594,6 @@ def get_novokuznetsk_rss_candidates(now):
         except Exception as e:
             print(f"❌ ОШИБКА RSS {feed_url}: {e}")
     return candidates
-
-def call_groq(prompt):
-    if not GROQ_API_KEY: return ""
-    try:
-        r = requests.post("https://api.groq.com/openai/v1/chat/completions",
-                          headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-                          json={"model": "openai/gpt-oss-120b", "temperature": 0.1, "messages": [{"role": "user", "content": prompt}]}, timeout=15)
-        r.raise_for_status()
-        return r.json()['choices'][0]['message']['content'].strip()
-    except Exception as e:
-        return ""
 
 def send_video_tg(video_url, caption, chat_id, is_nk=False):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
@@ -635,8 +641,15 @@ def send_photo_tg(photo_url, caption, chat_id, title="", is_nk=False):
 def send_to_telegram(text, media_type, media_url, channel_id=None, signature=None, title="", is_nk=False):
     if channel_id is None: channel_id = TELEGRAM_CHANNEL_ID
     if signature is None: signature = SIGNATURE_TG
+    
     full_text = f"{text}\n\n{signature}"
     
+    # ФИКС: Если текст длиннее лимита Телеграма (1024), оставляем ТОЛЬКО заголовок
+    if len(full_text) > 1000:
+        print("    ⚠️ Текст слишком длинный. Оставляем только заголовок.")
+        clean_title = title if title else text.split('\n')[0]
+        full_text = f"<b>{clean_title}</b>\n\n{signature}"
+        
     if media_type == 'video' and media_url:
         return send_video_tg(media_url, full_text, channel_id, is_nk)
     elif media_type == 'photo' and media_url:
@@ -649,7 +662,16 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
     if not MAX_BOT_TOKEN or not channel_id or not media_url: return False
     
     clean_text = text.replace('<b>', '**').replace('</b>', '**')
-    clean_text = f"{html.unescape(clean_text).strip()}\n\n{signature}"
+    full_text = f"{html.unescape(clean_text).strip()}\n\n{signature}"
+    
+    # ФИКС: Если текст длиннее лимита, оставляем ТОЛЬКО заголовок
+    if len(full_text) > 1000:
+        print("    ⚠️ Текст слишком длинный (MAX). Оставляем только заголовок.")
+        clean_title = title.replace('<b>', '').replace('</b>', '').strip() if title else ""
+        if not clean_title and '\n' in text:
+            clean_title = text.split('\n')[0].replace('<b>', '').replace('</b>', '').strip()
+        full_text = f"**{clean_title}**\n\n{signature}"
+
     headers = {"Authorization": MAX_BOT_TOKEN, "Content-Type": "application/json"}
     attachments = []
     
@@ -697,7 +719,7 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
         return False
 
     if not attachments: return False
-    payload = {"text": clean_text, "format": "markdown", "attachments": attachments}
+    payload = {"text": full_text, "format": "markdown", "attachments": attachments}
     for attempt in range(3):
         try:
             r = requests.post(f"https://platform-api2.max.ru/messages?chat_id={channel_id}", headers=headers, json=payload, timeout=REQUEST_TIMEOUT, verify=False)
@@ -712,45 +734,17 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
 
 def make_hybrid_post(title, summary):
     clean_title = clean_text_junk(title)
-    if len(clean_title) > 150: clean_title = clean_title[:150].strip() + "..."
-    if not clean_title: clean_title = "Новость"
-
     clean_summary = clean_text_junk(summary)
+    
     if clean_title and clean_summary.startswith(clean_title):
         clean_summary = clean_summary[len(clean_title):].strip()
-
-    if not clean_summary or len(clean_summary) < 10:
-        return f"<b>{clean_title}</b>"
-
-    if len(clean_summary) < 100:
-        return f"<b>{clean_title}</b>\n\n{clean_summary}"
-
-    prompt = f"""Ты — редактор. Сделай краткую сводку текста ниже.
-1. Сохрани все факты, имена, цифры.
-2. Убери "воду", ссылки, рекламу.
-3. Максимальная длина: 400-500 символов.
-4. ОБЯЗАТЕЛЬНО заверши текст полным предложением. Не обрывай текст на полуслове.
-5. НЕ пиши заголовок. Только текст.
-6. Запрещены эмодзи.
-ТЕКСТ:
-{clean_summary}"""
-    
-    ai_text = call_groq(prompt)
-    if not ai_text:
-        ai_text = clean_summary
-        if len(ai_text) > 800:
-            ai_text = ai_text[:800]
-            last_dot = max(ai_text.rfind('.'), ai_text.rfind('!'), ai_text.rfind('?'))
-            if last_dot > 400:
-                ai_text = ai_text[:last_dot+1]
-            else:
-                ai_text += "..."
-            
-    ai_text = html.escape(ai_text.strip())
-    if ai_text.lower().startswith(clean_title.lower()):
-        ai_text = ai_text[len(clean_title):].strip()
         
-    return f"<b>{clean_title}</b>\n\n{ai_text}"
+    clean_summary = re.sub(r'^[\.\,\-\:\s]+', '', clean_summary)
+
+    if not clean_summary:
+        return f"<b>{clean_title}</b>"
+        
+    return f"<b>{clean_title}</b>\n\n{clean_summary}"
 
 def process_novokuznetsk(tg_videos, tg_photos):
     if not TG_NK_CHANNEL_ID and not MAX_NK_CHANNEL_ID: 
@@ -787,7 +781,6 @@ def process_novokuznetsk(tg_videos, tg_photos):
         print("Новокузнецк: после фильтрации ничего не осталось.")
         return
         
-    # Сортируем: сначала видео, потом по приоритету и возрасту
     nk_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['priority'], x['source_priority'], x['age_hours']))
     
     seen = set()
@@ -835,7 +828,6 @@ def main():
     print(">>> Обработка основного канала...")
     main_candidates = all_videos + all_photos
     
-    # Сначала видео, потом по свежести
     main_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['age_hours']))
 
     posted_hashes = get_posted_hashes()
