@@ -96,10 +96,18 @@ def clean_text_junk(text):
     if not text: return ""
     text = html.unescape(text)
     
-    # 1. Отсекаем всё, что идет после вертикальной черты, если там есть слова MAX, TG, Телеграм, или похоже на юзернейм/канал
-    text = re.split(r'\|\s*(?=.*?(?:MAX|МАКС|TG|ТГ|Телеграм|Telegram|@|деньги\s+в\s+эфире|наш\s+мах))', text, flags=re.IGNORECASE)[0]
+    # 1. Отрезаем рекламу в конце текста (строки с MAX, TG, Телеграм)
+    lines = text.split('\n')
+    if lines:
+        last_line = lines[-1].strip()
+        if len(last_line) < 50 and any(k in last_line.lower() for k in ['max', 'мах', 'tg', 'тг', 'телеграм', 'telegram', 'подпишись']):
+            lines = lines[:-1]
+    text = '\n'.join(lines)
 
-    # 2. УМНАЯ ОЧИСТКА ХВОСТОВ (перечисляем фразы, которые часто пишут в конце)
+    # 2. Отсекаем всё, что идет после вертикальной черты, если там реклама
+    text = re.split(r'\|\s*(?=.*?(?:MAX|МАКС|TG|ТГ|Телеграм|Telegram|@|деньги\s+в\s+эфире))', text, flags=re.IGNORECASE)[0]
+
+    # 3. Убираем стандартные хвосты
     patterns = [
         r'💰\s*деньги\s+в\s+эфире',
         r'📺\s*наш\s+max',
@@ -119,7 +127,6 @@ def clean_text_junk(text):
         r'наши\s+соцсети',
         r'мы\s+в\s+телеграм',
         r'мы\s+в\s+макс',
-        r'тг\s*:\s*@\w+',
     ]
     for p in patterns:
         text = re.split(r'(?i)' + p, text)[0]
@@ -127,9 +134,6 @@ def clean_text_junk(text):
     text = re.sub(r'<[^>]+>', ' ', text)
     text = re.sub(r'https?://\S+', '', text)
     text = re.sub(r'@\w+', '', text)
-    
-    # 3. Удаляем одиночные эмодзи и спецсимволы в конце
-    text = re.sub(r'[\U00010000-\U0010ffff\|\-\=\>\<]\s*$', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
     text = re.sub(r'^[\.\,\-\:\s\|]+', '', text)
     text = re.sub(r'[\.\,\-\:\s\|]+$', '', text)
@@ -326,12 +330,14 @@ def extract_image_from_url(url):
         if resp.status_code != 200: return None
         soup = BeautifulSoup(resp.text, "html.parser")
         
+        # 1. Ищем og:image
         og_img = soup.select_one('meta[property="og:image"]')
         if og_img and og_img.get("content"):
             img_url = normalize_url(og_img.get("content"), url)
             if img_url and not is_bad_image_url(img_url): return img_url
             
-        article = soup.select_one('article') or soup.select_one('.article-body') or soup.select_one('.news-text')
+        # 2. Ищем ТОЛЬКО внутри тега article или новостного контейнера (чтобы не брать шапку сайта)
+        article = soup.select_one('article') or soup.select_one('.article-body') or soup.select_one('.news-text') or soup.select_one('.entry-content')
         if article:
             for img in article.find_all('img'):
                 src = img.get('src') or img.get('data-src') or img.get('data-original')
@@ -340,6 +346,7 @@ def extract_image_from_url(url):
                 if img_url and not is_bad_image_url(img_url):
                     return img_url
 
+        # 3. Если нет контейнера, ищем самую большую картинку (но только если она не баннер)
         best_img = None
         max_area = 0
         for img in soup.find_all('img'):
@@ -353,11 +360,12 @@ def extract_image_from_url(url):
             h = img.get('height', '0')
             if str(w).isdigit() and str(h).isdigit():
                 area = int(w) * int(h)
-                if area > max_area:
+                # Отсеиваем длинные баннеры
+                if area > max_area and int(h) > 200:
                     max_area = area
                     best_img = img_url
                     
-        if best_img and max_area > 10000: 
+        if best_img: 
             return best_img
     except Exception as e: 
         pass
