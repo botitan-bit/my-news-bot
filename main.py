@@ -71,7 +71,6 @@ TG_CHANNELS = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi", "zhest_
 
 NK_KEYWORDS = ["новокузнецк", "кузбасс", "кемерово", "белово", "прокопьевск", "ленинск-кузнецкий", "междуреченск", "мыски", "осинники", "киселевск", "юрга", "анжеро-судженск", "мариинск", "тайга", "гуьевск", "таштагол", "полысаево", "калтан", "березовский", "топки"]
 
-# УСИЛЕННЫЙ СПИСОК РЕКЛАМЫ (добавлены банковские термины)
 AD_WORDS = [
     "реклама", "промокод", "скидка", "erid", "маркировка",
     "казино", "ставки", "криптовалюта", "инвестиции", "заработок",
@@ -123,9 +122,9 @@ def is_bad_image(image_bytes, title_text=""):
         img = Image.open(BytesIO(image_bytes))
         W, H = img.size
         
-        # ТЕПЕРЬ ТРЕБУЕМ 800x600 (чтобы фото в ТГ выглядело крупно)
-        if W < 800 or H < 600:
-            print(f"    [Отклонено: слишком маленькая] {W}x{H} (нужно 800x600)")
+        # Отклоняем картинки меньше 600x400
+        if W < 600 or H < 400:
+            print(f"    [Отклонено: слишком маленькая] {W}x{H} (нужно 600x400)")
             return True
 
         if W * H == 0: return True
@@ -181,7 +180,7 @@ def is_bad_image(image_bytes, title_text=""):
             return True
     except Exception as e:
         print(f"    [Отклонено: ошибка чтения картинки] {e}")
-        return True # ЕСЛИ НЕ МОЖЕМ ПРОЧИТАТЬ - СЧИТАЕМ ПЛОХОЙ
+        return True
         
     return False
 
@@ -250,7 +249,6 @@ def save_nk_published_title(t):
 def is_ad(text):
     lower = text.lower()
     for w in AD_WORDS:
-        # Жесткий поиск целых слов, чтобы "банк" не срабатывал на "банкротство"
         pattern = r'(?<![а-яёa-z])' + re.escape(w) + r'(?![а-яёa-z])'
         if re.search(pattern, lower): 
             print(f"    [Найдена реклама: '{w}']")
@@ -469,41 +467,50 @@ def call_groq(prompt):
     except Exception as e:
         return ""
 
+# ОБНОВЛЕННАЯ ФУНКЦИЯ: Добавлена страховка в виде заглушки
 def generate_ai_image(title, summary):
     print("    🎨 Генерация картинки через ИИ...")
-    prompt = f"""Extract 3-4 main keywords in English for a news illustration based on this text.
-Output ONLY keywords separated by commas, nothing else. No text, no quotes.
-TEXT: {title} {summary[:200]}"""
-    
-    ai_keywords = call_groq(prompt).strip()
-    if not ai_keywords or len(ai_keywords) < 3:
-        ai_keywords = "news, breaking news, russia"
-        
-    ai_keywords = re.sub(r'[^a-zA-Z0-9\s,]', '', ai_keywords)
-    # Делаем запрос более реалистичным
-    prompt_text = f"high quality news photography, {ai_keywords}, realistic, 4k, detailed, cinematic lighting"
-    encoded_prompt = urllib.parse.quote(prompt_text)
-    img_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=768&nologo=true&seed={random.randint(1, 999999)}"
-    
     try:
-        resp = requests.get(img_url, timeout=30)
+        prompt = f"""Extract 3-4 main keywords in English for a news illustration based on this text.
+Output ONLY keywords separated by commas, nothing else.
+TEXT: {title} {summary[:200]}"""
+        
+        ai_keywords = call_groq(prompt).strip()
+        if not ai_keywords or len(ai_keywords) < 3:
+            ai_keywords = "news, breaking news, russia"
+            
+        ai_keywords = re.sub(r'[^a-zA-Z0-9\s,]', '', ai_keywords)
+        prompt_text = f"high quality news photography, {ai_keywords}, realistic, 4k, detailed, cinematic lighting"
+        encoded_prompt = urllib.parse.quote(prompt_text)
+        
+        # Увеличили таймаут ожидания до 60 секунд
+        img_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=768&nologo=true&seed={random.randint(1, 999999)}"
+        
+        resp = requests.get(img_url, timeout=60, verify=False)
         if resp.status_code == 200 and 'image' in resp.headers.get('Content-Type', ''):
             print(f"    ✅ Картинка сгенерирована! Ключевые слова: {ai_keywords}")
             return img_url
+            
     except Exception as e:
         print(f"    ⚠️ Ошибка генерации картинки: {e}")
-    return None
+        
+    # Если нейросеть упала или GitHub ее заблокировал
+    print("    ⚠️ ИИ не смог создать картинку. Берем надежную заглушку...")
+    return f"https://picsum.photos/1024/768?random={random.randint(1, 10000)}"
 
 def send_photo_tg(photo_url, caption, chat_id, title="", is_nk=False):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     try:
-        resp = requests.get(photo_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=REQUEST_TIMEOUT, verify=False)
+        # Если это сгенерированная картинка или заглушка, ждем дольше
+        t_out = 60 if "pollinations" in photo_url or "picsum" in photo_url else REQUEST_TIMEOUT
+        resp = requests.get(photo_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=t_out, verify=False)
+        
         ctype = resp.headers.get('Content-Type', '')
         if 'image' not in ctype: return False
         photo_data = resp.content
         if len(photo_data) == 0 or len(photo_data) > 10 * 1024 * 1024: return False
         
-        if "pollinations" not in photo_url:
+        if "pollinations" not in photo_url and "picsum" not in photo_url:
             if is_bad_image(photo_data, title): return False
         
         files = {'photo': ('photo.jpg', photo_data, 'image/jpeg')}
@@ -537,9 +544,11 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
     attachments = []
     
     try:
-        pr = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=REQUEST_TIMEOUT, allow_redirects=True, verify=False)
+        t_out = 60 if "pollinations" in media_url or "picsum" in media_url else REQUEST_TIMEOUT
+        pr = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=t_out, allow_redirects=True, verify=False)
         if 'image' not in pr.headers.get('Content-Type', '') or len(pr.content) > 10 * 1024 * 1024: return False
-        if "pollinations" not in media_url:
+        
+        if "pollinations" not in media_url and "picsum" not in media_url:
             if is_bad_image(pr.content, title): return False
             
         up = requests.post("https://platform-api2.max.ru/uploads?type=image", headers={"Authorization": MAX_BOT_TOKEN}, timeout=REQUEST_TIMEOUT, verify=False)
@@ -589,7 +598,6 @@ def make_hybrid_post(title, summary):
     if not clean_summary or len(clean_summary) < 10:
         return f"<b>{clean_title}</b>"
 
-    # Если текст короткий, не мучаем ИИ, публикуем как есть
     if len(clean_summary) < 100:
         return f"<b>{clean_title}</b>\n\n{clean_summary}"
 
@@ -720,7 +728,6 @@ def main():
             print(f"\nКандидат: {c['title'][:50]}...")
             body = make_hybrid_post(c['title'], c['summary'])
             
-            # Для основного канала тоже проверяем картинку
             media_url = c['media_url']
             if not media_url or not is_valid_image_url(media_url, c['title']):
                 print("    ⚠️ Картинка маленькая или плохая. Генерируем ИИ...")
