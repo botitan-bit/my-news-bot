@@ -11,6 +11,7 @@ import urllib3
 import hashlib
 import tempfile
 import traceback
+import urllib.parse
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from datetime import datetime, timezone, timedelta
@@ -18,7 +19,6 @@ from PIL import Image, ImageStat
 import pytesseract
 from io import BytesIO
 
-# Принудительный сброс буфера
 sys.stdout.reconfigure(line_buffering=True)
 print = functools.partial(print, flush=True)
 
@@ -26,7 +26,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 print("=== БОТ ЗАПУСТИЛСЯ ===")
 
-# --- Ключи ---
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
@@ -36,11 +35,9 @@ MAX_CHANNEL_ID = os.environ.get("MAX_CHANNEL_ID", "").strip()
 TG_NK_CHANNEL_ID = os.environ.get("TG_NK_CHANNEL_ID", "").strip()
 MAX_NK_CHANNEL_ID = os.environ.get("MAX_NK_CHANNEL_ID", "").strip()
 
-# Защита от зависаний: 15 секунд на любой запрос
 REQUEST_TIMEOUT = 15
 NK_MAX_ATTEMPTS = 10
 
-# --- Подписи ---
 SIGNATURE_TG = '<b><a href="https://t.me/+l7bgzfXgngBkN2My">ПЕРВЫЕ НОВОСТИ</a></b>'
 SIGNATURE_MAX = '**[ПЕРВЫЕ НОВОСТИ](https://max.ru/channel_pervonovosti)**'
 
@@ -149,7 +146,9 @@ def is_text_image(image_bytes, title_text=""):
         snippet = clean_text[:80].replace('\n', ' ')
         print(f"    [OCR] {len(clean_text)} симв., покрытие {coverage:.0%}, StdDev {stddev:.0f}: {snippet!r}")
 
-        if stddev < 25: return True
+        if stddev < 25: 
+            print("    [Отклонено: однотонная графика/обложка]")
+            return True
 
         if title_text and len(clean_text) > 10:
             clean_t = re.sub(r'[^\w\s]', '', title_text.lower())
@@ -157,15 +156,21 @@ def is_text_image(image_bytes, title_text=""):
             o_words = set(clean_text.lower().split())
             if t_words:
                 overlap = len(t_words.intersection(o_words)) / len(t_words)
-                if overlap > 0.5: return True
+                if overlap > 0.5: 
+                    print("    [Отклонено: обложка содержит заголовок новости]")
+                    return True
 
         lower_text = clean_text.lower()
         for phrase in IMG_AD_PHRASES:
-            if phrase in lower_text: return True
+            if phrase in lower_text: 
+                print("    [Отклонено: рекламный баннер на картинке]")
+                return True
 
-        if len(clean_text) > 150 and coverage > 0.25: return True
+        if len(clean_text) > 150 and coverage > 0.25: 
+            print("    [Отклонено: картинка с большим текстом]")
+            return True
     except Exception as e:
-        print(f"    ⚠️ Ошибка OCR: {e}")
+        pass
     return False
 
 def get_text_hash(text):
@@ -206,8 +211,6 @@ def get_posted_hashes(): return load_lines("posted_hashes.txt")
 def save_posted_hash(h): append_line("posted_hashes.txt", h)
 def get_posted_links(): return load_lines("posted_news.txt")
 def save_posted_link(l): append_line("posted_news.txt", l)
-def get_posted_videos(): return load_lines("posted_videos.txt")
-def save_posted_video(h): append_line("posted_videos.txt", h)
 def get_posted_photos(): return load_lines("posted_images.txt")
 def save_posted_photo(u): append_line("posted_images.txt", u)
 def get_recent_titles(): return load_lines("published_titles.txt")
@@ -223,8 +226,6 @@ def get_posted_nk_hashes(): return load_lines("posted_nk_hashes.txt")
 def save_posted_nk_hash(h): append_line("posted_nk_hashes.txt", h)
 def get_posted_nk_photos(): return load_lines("posted_nk_images.txt")
 def save_posted_nk_photo(u): append_line("posted_nk_images.txt", u)
-def get_posted_nk_videos(): return load_lines("posted_nk_videos.txt")
-def save_posted_nk_video(u): append_line("posted_nk_videos.txt", u)
 def get_recent_nk_titles(): return load_lines("published_nk_titles.txt")
 
 def save_nk_published_title(t):
@@ -256,7 +257,19 @@ def extract_image_from_url(url):
         if tw_img and tw_img.get("content"):
             img_url = normalize_url(tw_img.get("content"), url)
             if img_url and not is_bad_image_url(img_url): return img_url
-    except Exception as e: pass
+            
+        for img in soup.find_all('img'):
+            src = img.get('src') or img.get('data-src') or img.get('data-original')
+            if not src or src.startswith('data:'): continue
+            w = img.get('width', '')
+            h = img.get('height', '')
+            if w and w.isdigit() and int(w) < 200: continue
+            if h and h.isdigit() and int(h) < 200: continue
+            img_url = normalize_url(src, url)
+            if img_url and not is_bad_image_url(img_url):
+                return img_url
+    except Exception as e: 
+        pass
     return None
 
 def get_nk_priority(text):
@@ -317,7 +330,7 @@ def get_tg_web_photos(channel_name, now):
                 "link": f"https://t.me/{pid}", "text_hash": th, "channel": channel_name
             })
     except Exception as e:
-        print(f"❌ ОШИБКА фото {channel_name}: {e}")
+        pass
     return photos
 
 def get_novokuznetsk_rss_candidates(now):
@@ -328,12 +341,10 @@ def get_novokuznetsk_rss_candidates(now):
     
     for feed_url in NK_RSS_FEEDS:
         try:
-            # ЗАЩИТА ОТ ЗАВИСАНИЙ: скачиваем через requests с таймаутом
             resp = requests.get(feed_url, timeout=REQUEST_TIMEOUT, verify=False, headers={'User-Agent': 'Mozilla/5.0'})
             feed = feedparser.parse(resp.content)
             
             if not feed.entries:
-                print(f"  [{feed_url[:40]}...] пусто")
                 continue
                 
             entries_count = len(feed.entries)
@@ -389,11 +400,8 @@ def get_novokuznetsk_rss_candidates(now):
                 if not media_url and link:
                     media_url = extract_image_from_url(link)
 
-                if not media_url:
-                    drop_no_media += 1
-                    continue
-
-                if media_url in posted_photos:
+                # Если медиа так и нет, оставляем None (бот сам сгенерирует картинку)
+                if media_url and media_url in posted_photos:
                     drop_dup += 1
                     continue
                     
@@ -411,7 +419,8 @@ def get_novokuznetsk_rss_candidates(now):
                     
                 candidates.append({
                     'title': title, 'summary': clean_text, 'age_hours': age_hours,
-                    'media_type': 'photo', 'media_url': media_url,
+                    'media_type': 'photo' if media_url else 'text',
+                    'media_url': media_url,
                     'link': link, 'text_hash': th, 'channel': 'rss',
                     'priority': get_nk_priority(full_text),
                     'source_priority': 1 if "novokuznetsk-news" in feed_url else 0
@@ -422,6 +431,52 @@ def get_novokuznetsk_rss_candidates(now):
             print(f"❌ ОШИБКА RSS {feed_url}: {e}")
     return candidates
 
+def call_groq(prompt):
+    if not GROQ_API_KEY: return ""
+    try:
+        r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                          headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                          json={"model": "openai/gpt-oss-120b", "messages": [{"role": "user", "content": prompt}]}, timeout=15)
+        r.raise_for_status()
+        return r.json()['choices'][0]['message']['content'].strip()
+    except Exception as e:
+        return ""
+
+# ============ НОВАЯ ФУНКЦИЯ: ГЕНЕРАЦИЯ КАРТИНКИ ============
+def generate_ai_image(title, summary):
+    print("    🎨 Генерация картинки через ИИ...")
+    # 1. Просим Groq выделить ключевые слова на английском
+    prompt = f"""Extract 3-4 main keywords in English for a news illustration based on this text.
+Output ONLY keywords separated by commas, nothing else. No text, no quotes.
+TEXT: {title} {summary[:200]}"""
+    
+    ai_keywords = call_groq(prompt).strip()
+    if not ai_keywords or len(ai_keywords) < 3:
+        # Если ИИ не ответил, берем просто заголовок на английском (грубый перевод)
+        ai_keywords = "news, breaking news, russia"
+        
+    # Убираем лишние кавычки и переносы
+    ai_keywords = re.sub(r'[^a-zA-Z0-9\s,]', '', ai_keywords)
+    
+    # 2. Формируем ссылку для генерации (Pollinations.ai - бесплатно, без ключей)
+    prompt_text = f"news photography, {ai_keywords}, realistic, high quality, cinematic lighting"
+    encoded_prompt = urllib.parse.quote(prompt_text)
+    
+    img_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=768&nologo=true&seed={random.randint(1, 999999)}"
+    
+    # Проверяем, что картинка скачалась
+    try:
+        resp = requests.get(img_url, timeout=30)
+        if resp.status_code == 200 and 'image' in resp.headers.get('Content-Type', ''):
+            print(f"    ✅ Картинка сгенерирована! Ключевые слова: {ai_keywords}")
+            return img_url
+    except Exception as e:
+        print(f"    ⚠️ Ошибка генерации картинки: {e}")
+        
+    return None
+
+# ===========================================================
+
 def send_photo_tg(photo_url, caption, chat_id, title="", is_nk=False):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     try:
@@ -430,7 +485,10 @@ def send_photo_tg(photo_url, caption, chat_id, title="", is_nk=False):
         if 'image' not in ctype: return False
         photo_data = resp.content
         if len(photo_data) == 0 or len(photo_data) > 10 * 1024 * 1024: return False
-        if is_text_image(photo_data, title): return False
+        
+        # Для сгенерированных картинок пропускаем OCR, так как там нет текста
+        if "pollinations" not in photo_url:
+            if is_text_image(photo_data, title): return False
         
         files = {'photo': ('photo.jpg', photo_data, 'image/jpeg')}
         data = {"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"}
@@ -448,14 +506,14 @@ def send_to_telegram(text, media_type, media_url, channel_id=None, signature=Non
     if signature is None: signature = SIGNATURE_TG
     full_text = f"{text}\n\n{signature}"
     
-    if media_type == 'photo' and media_url:
+    if media_url:
         return send_photo_tg(media_url, full_text, channel_id, title, is_nk)
     return False
 
 def send_to_max(text, media_type, media_url, channel_id=None, signature=None, title="", is_nk=False):
     if channel_id is None: channel_id = MAX_CHANNEL_ID
     if signature is None: signature = SIGNATURE_MAX
-    if not MAX_BOT_TOKEN or not channel_id or media_type != 'photo' or not media_url: return False
+    if not MAX_BOT_TOKEN or not channel_id or not media_url: return False
     
     clean_text = text.replace('<b>', '**').replace('</b>', '**')
     clean_text = f"{html.unescape(clean_text).strip()}\n\n{signature}"
@@ -465,8 +523,9 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
     try:
         pr = requests.get(media_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=REQUEST_TIMEOUT, allow_redirects=True, verify=False)
         if 'image' not in pr.headers.get('Content-Type', '') or len(pr.content) > 10 * 1024 * 1024: return False
-        if is_text_image(pr.content, title): return False
-        
+        if "pollinations" not in media_url:
+            if is_text_image(pr.content, title): return False
+            
         up = requests.post("https://platform-api2.max.ru/uploads?type=image", headers={"Authorization": MAX_BOT_TOKEN}, timeout=REQUEST_TIMEOUT, verify=False)
         ud = up.json()
         if not ud.get("url"): return False
@@ -486,7 +545,6 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
         
         attachments.append({"type": "image", "payload": {"token": token}})
     except Exception as e:
-        print(f"❌ ОШИБКА МЕДИА MAX: {e}")
         return False
 
     if not attachments: return False
@@ -502,18 +560,6 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
         except Exception as e:
             pass
     return False
-
-def call_groq(prompt):
-    if not GROQ_API_KEY: return ""
-    try:
-        r = requests.post("https://api.groq.com/openai/v1/chat/completions",
-                          headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-                          json={"model": "openai/gpt-oss-120b", "messages": [{"role": "user", "content": prompt}]}, timeout=15)
-        r.raise_for_status()
-        return r.json()['choices'][0]['message']['content'].strip()
-    except Exception as e:
-        print(f"⚠️ Ошибка Groq: {e}")
-        return ""
 
 def make_hybrid_post(title, summary):
     clean_title = clean_text_junk(title)
@@ -550,7 +596,6 @@ def make_hybrid_post(title, summary):
 
 def process_novokuznetsk(tg_photos):
     if not TG_NK_CHANNEL_ID and not MAX_NK_CHANNEL_ID: 
-        print("Новокузнецк: ID каналов не заданы, пропускаем.")
         return
         
     now = datetime.now(timezone.utc)
@@ -588,14 +633,23 @@ def process_novokuznetsk(tg_photos):
         print(f"Кандидат (Приоритет {c['priority']}): {c['title'][:50]}")
         body = make_hybrid_post(c['title'], c['summary'])
         
+        media_url = c['media_url']
+        # Если нет нормальной картинки, генерируем свою!
+        if not media_url:
+            media_url = generate_ai_image(c['title'], c['summary'])
+            
+        if not media_url:
+            print("    ❌ Не удалось получить картинку (ни исходную, ни сгенерированную). Пропускаем.")
+            continue
+            
         tg_ok = False
         if TG_NK_CHANNEL_ID:
-            tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], channel_id=TG_NK_CHANNEL_ID, signature=SIGNATURE_NK_TG, title=c['title'], is_nk=True)
+            tg_ok = send_to_telegram(body, 'photo', media_url, channel_id=TG_NK_CHANNEL_ID, signature=SIGNATURE_NK_TG, title=c['title'], is_nk=True)
             print(f"Новокузнецк TG: {'OK' if tg_ok else 'FAIL'}")
             
         max_ok = False
         if MAX_NK_CHANNEL_ID:
-            max_ok = send_to_max(body, c['media_type'], c['media_url'], channel_id=MAX_NK_CHANNEL_ID, signature=SIGNATURE_NK_MAX, title=c['title'], is_nk=True)
+            max_ok = send_to_max(body, 'photo', media_url, channel_id=MAX_NK_CHANNEL_ID, signature=SIGNATURE_NK_MAX, title=c['title'], is_nk=True)
             print(f"Новокузнецк MAX: {'OK' if max_ok else 'FAIL'}")
             
         if tg_ok or max_ok:
@@ -604,20 +658,19 @@ def process_novokuznetsk(tg_photos):
             return
 
 def main():
-    print(">>> Шаг 1: Проверка файлов состояния...")
     ensure_state_files_exist()
     now = datetime.now(timezone.utc)
     
-    print(">>> Шаг 2: Сбор фото из Telegram...")
+    print(">>> Сбор фото из Telegram...")
     all_photos = []
     for ch in TG_CHANNELS:
         all_photos.extend(get_tg_web_photos(ch, now))
     print(f"Собрано фото: {len(all_photos)}")
 
-    print(">>> Шаг 3: Обработка Новокузнецка...")
+    print(">>> Обработка Новокузнецка...")
     process_novokuznetsk(all_photos)
 
-    print(">>> Шаг 4: Обработка основного канала...")
+    print(">>> Обработка основного канала...")
     main_candidates = all_photos
     main_candidates.sort(key=lambda x: x['age_hours'])
 
@@ -640,6 +693,7 @@ def main():
         for c in unique_main[:5]:
             print(f"\nКандидат: {c['title'][:50]}...")
             body = make_hybrid_post(c['title'], c['summary'])
+            
             tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], title=c['title'])
             print(f"Telegram: {'OK' if tg_ok else 'FAIL'}")
             if not tg_ok: continue
@@ -655,7 +709,6 @@ def main():
     else:
         print("❌ Для основного канала ничего нового не найдено.")
         
-    print(">>> Работа завершена.")
     sys.exit(0)
 
 if __name__ == "__main__":
