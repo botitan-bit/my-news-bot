@@ -296,6 +296,7 @@ def extract_image_from_url(url):
         if resp.status_code != 200: return None
         soup = BeautifulSoup(resp.text, "html.parser")
         
+        # 1. Главная картинка (og:image)
         og_img = soup.select_one('meta[property="og:image"]')
         if og_img and og_img.get("content"):
             img_url = normalize_url(og_img.get("content"), url)
@@ -306,6 +307,17 @@ def extract_image_from_url(url):
             img_url = normalize_url(tw_img.get("content"), url)
             if img_url and not is_bad_image_url(img_url): return img_url
             
+        # 2. Ищем картинку внутри текста статьи (обычно там нормальные фото)
+        article = soup.select_one('article') or soup.select_one('.article-body') or soup.select_one('.news-text')
+        if article:
+            for img in article.find_all('img'):
+                src = img.get('src') or img.get('data-src') or img.get('data-original')
+                if not src or src.startswith('data:'): continue
+                img_url = normalize_url(src, url)
+                if img_url and not is_bad_image_url(img_url):
+                    return img_url
+
+        # 3. Если вообще ничего нет, перебираем все теги <img> на странице
         for img in soup.find_all('img'):
             src = img.get('src') or img.get('data-src') or img.get('data-original')
             if not src or src.startswith('data:'): continue
@@ -472,6 +484,7 @@ def get_novokuznetsk_rss_candidates(now):
                     continue
                 
                 media_url = None
+                media_type = None
                 link = entry.get('link', '')
 
                 # Ищем видео в RSS
@@ -512,14 +525,23 @@ def get_novokuznetsk_rss_candidates(now):
                             media_url = u
                             media_type = 'photo'
                             break
-                
-                # Если в фиде пусто, идем на страницу
-                if not media_url and link:
+
+                # ВАЖНО: Если картинка из RSS плохая или её нет, идем на сайт статьи
+                if media_type == 'photo' and media_url:
+                    if not is_valid_image_url(media_url, title):
+                        print(f"    ⚠️ Картинка из RSS плохая. Ищем на сайте...")
+                        media_url = extract_image_from_url(link)
+                        if not media_url:
+                            drop_no_media += 1
+                            continue
+                elif not media_url and link:
                     media_url = extract_image_from_url(link)
                     if media_url:
                         media_type = 'photo'
+                    else:
+                        drop_no_media += 1
+                        continue
 
-                # Если медиа так и нет — пропускаем
                 if not media_url:
                     drop_no_media += 1
                     continue
@@ -778,12 +800,6 @@ def process_novokuznetsk(tg_videos, tg_photos):
         print(f"Кандидат ({c['media_type']}, Приоритет {c['priority']}): {c['title'][:50]}")
         body = make_hybrid_post(c['title'], c['summary'])
         
-        # Проверяем картинку перед отправкой (только для фото)
-        if c['media_type'] == 'photo':
-            if not is_valid_image_url(c['media_url'], c['title']):
-                print("    ⚠️ Исходная картинка плохая или маленькая. Пропускаем.")
-                continue
-            
         tg_ok = False
         if TG_NK_CHANNEL_ID:
             tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], channel_id=TG_NK_CHANNEL_ID, signature=SIGNATURE_NK_TG, title=c['title'], is_nk=True)
@@ -842,11 +858,6 @@ def main():
             print(f"\nКандидат: {c['title'][:50]}... ({c['media_type']})")
             body = make_hybrid_post(c['title'], c['summary'])
             
-            if c['media_type'] == 'photo':
-                if not is_valid_image_url(c['media_url'], c['title']):
-                    print("    ⚠️ Картинка маленькая или плохая. Пропускаем.")
-                    continue
-                
             tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], title=c['title'])
             print(f"Telegram: {'OK' if tg_ok else 'FAIL'}")
             if not tg_ok: continue
