@@ -65,7 +65,21 @@ NK_RSS_FEEDS = [
     "https://www.kem.kp.ru/rss/",
 ]
 
+# Каналы для основного канала
 TG_CHANNELS = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi", "zhest_na_dorogah"]
+
+# НОВЫЙ СПИСОК КАНАЛОВ ДЛЯ НОВОКУЗНЕЦКА
+TG_NK_CHANNELS = [
+    "novokuznetsklife",      # Бардокин NEWS Новокузнецк
+    "news_novokuznetsk",     # Новости Новокузнецк
+    "kuzpress",              # КузПресс
+    "wwwcitynru",            # Город Новостей (Новокузнецк)
+    "NWD_xcWbz_g3Zjcy",      # Новокузнецк 24/7
+    "kuzbassinfo",           # Кузбасс инфо
+    "mediakailo",            # Кузнецкое кайло
+    "region42_kuzbass",      # Регион 42 | Кузбасс
+    "kuzbass_now"            # Кузбасс сейчас
+]
 
 NK_KEYWORDS = ["новокузнецк", "кузбасс", "кемерово", "белово", "прокопьевск", "ленинск-кузнецкий", "междуреченск", "мыски", "осинники", "киселевск", "юрга", "анжеро-судженск", "мариинск", "тайга", "гуьевск", "таштагол", "полысаево", "калтан", "березовский", "топки"]
 
@@ -96,7 +110,6 @@ def clean_text_junk(text):
     if not text: return ""
     text = html.unescape(text)
     
-    # 1. Отрезаем рекламу в конце текста (строки с MAX, TG, Телеграм)
     lines = text.split('\n')
     if lines:
         last_line = lines[-1].strip()
@@ -104,11 +117,11 @@ def clean_text_junk(text):
             lines = lines[:-1]
     text = '\n'.join(lines)
 
-    # 2. Отсекаем всё, что идет после вертикальной черты, если там реклама
-    text = re.split(r'\|\s*(?=.*?(?:MAX|МАКС|TG|ТГ|Телеграм|Telegram|@|деньги\s+в\s+эфире))', text, flags=re.IGNORECASE)[0]
+    text = re.split(r'\|\s*(?=.*?(?:MAX|МАКС|TG|ТГ|Телеграм|Telegram|@))', text, flags=re.IGNORECASE)[0]
 
-    # 3. Убираем стандартные хвосты
     patterns = [
+        r'📣?\s*прямой\s+эфир',
+        r'🔴?\s*прямой\s+эфир',
         r'💰\s*деньги\s+в\s+эфире',
         r'📺\s*наш\s+max',
         r'наш\s+max',
@@ -125,8 +138,6 @@ def clean_text_junk(text):
         r'читайте\s+также',
         r'источник\s*:',
         r'наши\s+соцсети',
-        r'мы\s+в\s+телеграм',
-        r'мы\s+в\s+макс',
     ]
     for p in patterns:
         text = re.split(r'(?i)' + p, text)[0]
@@ -134,6 +145,10 @@ def clean_text_junk(text):
     text = re.sub(r'<[^>]+>', ' ', text)
     text = re.sub(r'https?://\S+', '', text)
     text = re.sub(r'@\w+', '', text)
+    
+    text = re.sub(r'[\U00010000-\U0010ffff]', '', text)
+    text = re.sub(r'[\u2600-\u27BF]', '', text)
+    
     text = re.sub(r'\s+', ' ', text).strip()
     text = re.sub(r'^[\.\,\-\:\s\|]+', '', text)
     text = re.sub(r'[\.\,\-\:\s\|]+$', '', text)
@@ -229,7 +244,7 @@ def is_duplicate_text(text, hashes):
         if not old_words: continue
         inter = new_words.intersection(old_words)
         union = new_words.union(old_words)
-        if len(union) > 0 and (len(inter) / len(union)) > 0.4: return True
+        if len(union) > 0 and (len(inter) / len(union)) > 0.25: return True
     return False
 
 def is_duplicate_title(title, recent_titles):
@@ -319,54 +334,6 @@ def extract_direct_video_url(url):
         matches = re.findall(r'(https?://[^\s"\'<>]+?\.(?:mp4|webm)[^\s"\'<>]*)', html_text)
         if matches: return html.unescape(matches[0]).replace('\\/', '/')
         if 't.me/' in url and '?embed' not in url: return extract_direct_video_url(url.split('?')[0] + '?embed=1')
-    except Exception as e: 
-        pass
-    return None
-
-def extract_image_from_url(url):
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
-    try:
-        resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT, allow_redirects=True, verify=False)
-        if resp.status_code != 200: return None
-        soup = BeautifulSoup(resp.text, "html.parser")
-        
-        # 1. Ищем og:image
-        og_img = soup.select_one('meta[property="og:image"]')
-        if og_img and og_img.get("content"):
-            img_url = normalize_url(og_img.get("content"), url)
-            if img_url and not is_bad_image_url(img_url): return img_url
-            
-        # 2. Ищем ТОЛЬКО внутри тега article или новостного контейнера (чтобы не брать шапку сайта)
-        article = soup.select_one('article') or soup.select_one('.article-body') or soup.select_one('.news-text') or soup.select_one('.entry-content')
-        if article:
-            for img in article.find_all('img'):
-                src = img.get('src') or img.get('data-src') or img.get('data-original')
-                if not src or src.startswith('data:'): continue
-                img_url = normalize_url(src, url)
-                if img_url and not is_bad_image_url(img_url):
-                    return img_url
-
-        # 3. Если нет контейнера, ищем самую большую картинку (но только если она не баннер)
-        best_img = None
-        max_area = 0
-        for img in soup.find_all('img'):
-            src = img.get('src') or img.get('data-src') or img.get('data-original')
-            if not src or src.startswith('data:'): continue
-            
-            img_url = normalize_url(src, url)
-            if not img_url or is_bad_image_url(img_url): continue
-            
-            w = img.get('width', '0')
-            h = img.get('height', '0')
-            if str(w).isdigit() and str(h).isdigit():
-                area = int(w) * int(h)
-                # Отсеиваем длинные баннеры
-                if area > max_area and int(h) > 200:
-                    max_area = area
-                    best_img = img_url
-                    
-        if best_img: 
-            return best_img
     except Exception as e: 
         pass
     return None
@@ -509,136 +476,43 @@ def get_tg_web_photos(channel_name, now):
         pass
     return photos
 
-def get_novokuznetsk_rss_candidates(now):
-    posted_hashes = get_posted_nk_hashes()
-    posted_photos = get_posted_nk_photos()
+# НОВАЯ ФУНКЦИЯ: Сбор кандидатов для Новокузнецка ТОЛЬКО из Telegram-каналов
+def get_novokuznetsk_tg_candidates(now):
     candidates = []
-    print("\n--- Диагностика RSS Новокузнецка ---")
+    posted_nk_videos = get_posted_nk_videos()
+    posted_nk_photos = get_posted_nk_photos()
+    posted_nk_hashes = get_posted_nk_hashes()
+    recent_nk_titles = get_recent_nk_titles()
     
-    for feed_url in NK_RSS_FEEDS:
-        try:
-            resp = requests.get(feed_url, timeout=REQUEST_TIMEOUT, verify=False, headers={'User-Agent': 'Mozilla/5.0'})
-            feed = feedparser.parse(resp.content)
+    print("\n--- Сбор новостей Новокузнецка из Telegram-каналов ---")
+    
+    # Проходим по каждому каналу из нового списка
+    for ch in TG_NK_CHANNELS:
+        print(f"  Сканируем @{ch}...")
+        # Собираем видео и фото из канала
+        ch_videos = get_tg_web_videos(ch, now)
+        ch_photos = get_tg_web_photos(ch, now)
+        
+        for item in ch_videos + ch_photos:
+            # Ищем ключевые слова в тексте поста
+            if not any(k in item['summary'].lower() for k in NK_KEYWORDS):
+                continue
+                
+            # Проверяем на дубликаты
+            if item['media_url'] in posted_nk_videos or item['media_url'] in posted_nk_photos:
+                continue
+            if is_duplicate_text(item['summary'], posted_nk_hashes):
+                continue
+            if is_duplicate_title(item['title'], recent_nk_titles):
+                continue
+                
+            # Определяем приоритет (насколько это "новокузнецкая" новость)
+            item['priority'] = get_nk_priority(item['summary'])
+            item['source_priority'] = 0
             
-            if not feed.entries: continue
-                
-            entries_count = len(feed.entries)
-            city_matches = 0
-            drop_old = 0
-            drop_ad = 0
-            drop_short = 0
-            drop_dup = 0
-            drop_no_media = 0
-            candidates_found = 0
+            candidates.append(item)
             
-            for entry in feed.entries:
-                title = entry.get('title', '')
-                summary = entry.get('summary', '') or entry.get('description', '')
-                full_text = f"{title} {summary}"
-                if not any(k in full_text.lower() for k in NK_KEYWORDS): continue
-                city_matches += 1
-                
-                pub_date = now
-                if 'published_parsed' in entry: pub_date = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-                elif 'updated_parsed' in entry: pub_date = datetime(*entry.updated_parsed[:6], tzinfo=timezone.utc)
-                age_hours = (now - pub_date).total_seconds() / 3600
-                if age_hours > 24:
-                    drop_old += 1
-                    continue
-                
-                media_url = None
-                media_type = None
-                link = entry.get('link', '')
-
-                for m in entry.get('media_content', []):
-                    if m.get('type', '').startswith('video'):
-                        u = normalize_url(m.get('url'), link)
-                        if u: media_url = u; media_type = 'video'; break
-                if not media_url and 'links' in entry:
-                    for l in entry.links:
-                        if l.get('rel') == 'enclosure' and l.get('type', '').startswith('video'):
-                            u = normalize_url(l.get('href'), link)
-                            if u: media_url = u; media_type = 'video'; break
-
-                if not media_url:
-                    for m in entry.get('media_content', []):
-                        if m.get('type', '').startswith('image'):
-                            u = normalize_url(m.get('url'), link)
-                            if u and not is_bad_image_url(u): media_url = u; media_type = 'photo'; break
-                if not media_url:
-                    for m in entry.get('media_thumbnail', []):
-                        u = normalize_url(m.get('url'), link)
-                        if u and not is_bad_image_url(u): media_url = u; media_type = 'photo'; break
-                if not media_url and 'links' in entry:
-                    for l in entry.links:
-                        if l.get('rel') == 'enclosure' and l.get('type', '').startswith('image'):
-                            u = normalize_url(l.get('href'), link)
-                            if u and not is_bad_image_url(u): media_url = u; media_type = 'photo'; break
-                
-                if not media_url and summary:
-                    soup = BeautifulSoup(summary, 'html.parser')
-                    for img in soup.find_all('img'):
-                        src = img.get('src', '')
-                        parent_a = img.find_parent('a')
-                        href = parent_a.get('href', '') if parent_a else ''
-                        u = normalize_url(src, link)
-                        if u and not is_bad_image_url(u) and not is_bad_image_url(href):
-                            media_url = u
-                            media_type = 'photo'
-                            break
-
-                if media_type == 'photo' and media_url:
-                    if not is_valid_image_url(media_url, title):
-                        print(f"    ⚠️ Картинка из RSS плохая. Ищем на сайте...")
-                        media_url = extract_image_from_url(link)
-                        if not media_url or not is_valid_image_url(media_url, title):
-                            drop_no_media += 1
-                            continue
-                elif not media_url and link:
-                    media_url = extract_image_from_url(link)
-                    if media_url:
-                        media_type = 'photo'
-                        if not is_valid_image_url(media_url, title):
-                            drop_no_media += 1
-                            continue
-                    else:
-                        drop_no_media += 1
-                        continue
-
-                if not media_url:
-                    drop_no_media += 1
-                    continue
-
-                if media_url in posted_photos:
-                    drop_dup += 1
-                    continue
-                    
-                clean_text = BeautifulSoup(summary, 'html.parser').get_text(separator='\n', strip=True)
-                clean_text = clean_text_junk(clean_text)
-                
-                if len(clean_text) < 20:
-                    drop_short += 1
-                    continue
-                th = get_text_hash(clean_text)
-                if is_duplicate_text(clean_text, posted_hashes):
-                    drop_dup += 1
-                    continue
-                if is_ad(clean_text):
-                    drop_ad += 1
-                    continue
-                    
-                candidates.append({
-                    'title': title, 'summary': clean_text, 'age_hours': age_hours,
-                    'media_type': media_type,
-                    'media_url': media_url,
-                    'link': link, 'text_hash': th, 'channel': 'rss',
-                    'priority': get_nk_priority(full_text),
-                    'source_priority': 1 if "novokuznetsk-news" in feed_url else 0
-                })
-                candidates_found += 1
-            print(f"  [{feed_url[:40]}...] Всего: {entries_count} | Города: {city_matches} | Без медиа: {drop_no_media} | Старые: {drop_old} | Реклама: {drop_ad} | Короткие: {drop_short} | Дубли: {drop_dup} | Подошло: {candidates_found}")
-        except Exception as e:
-            print(f"❌ ОШИБКА RSS {feed_url}: {e}")
+    print(f"  Собрано кандидатов из TG: {len(candidates)}")
     return candidates
 
 def send_video_tg(video_url, caption, chat_id, is_nk=False):
@@ -793,37 +667,16 @@ def process_novokuznetsk(tg_videos, tg_photos):
         return
         
     now = datetime.now(timezone.utc)
-    nk_candidates = []
-    posted_nk_photos = get_posted_nk_photos()
-    posted_nk_videos = get_posted_nk_videos()
-    posted_nk_hashes = get_posted_nk_hashes()
-    recent_nk_titles = get_recent_nk_titles()
     
-    for v in tg_videos:
-        if any(k in v['summary'].lower() for k in NK_KEYWORDS):
-            if v['media_url'] in posted_nk_videos: continue
-            if is_duplicate_text(v['summary'], posted_nk_hashes): continue
-            if is_duplicate_title(v['title'], recent_nk_titles): continue
-            v['priority'] = get_nk_priority(v['summary'])
-            v['source_priority'] = 0
-            nk_candidates.append(v)
-            
-    for p in tg_photos:
-        if any(k in p['summary'].lower() for k in NK_KEYWORDS):
-            if p['media_url'] in posted_nk_photos: continue
-            if is_duplicate_text(p['summary'], posted_nk_hashes): continue
-            if is_duplicate_title(p['title'], recent_nk_titles): continue
-            p['priority'] = get_nk_priority(p['summary'])
-            p['source_priority'] = 0
-            nk_candidates.append(p)
-            
-    nk_candidates.extend(get_novokuznetsk_rss_candidates(now))
+    # 1. Собираем кандидатов из Telegram-каналов Новокузнецка/Кузбасса
+    nk_candidates = get_novokuznetsk_tg_candidates(now)
     
     if not nk_candidates:
         print("Новокузнецк: после фильтрации ничего не осталось.")
         return
         
-    nk_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['priority'], x['source_priority'], x['age_hours']))
+    # Сортируем: сначала видео, потом по приоритету (Новокузнецк > Кузбасс) и свежести
+    nk_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['priority'], x['age_hours']))
     
     seen = set()
     unique_nk = []
@@ -856,7 +709,7 @@ def main():
     ensure_state_files_exist()
     now = datetime.now(timezone.utc)
     
-    print(">>> Сбор видео и фото из Telegram...")
+    print(">>> Сбор видео и фото из Telegram для Основного канала...")
     all_videos = []
     all_photos = []
     for ch in TG_CHANNELS:
@@ -864,8 +717,8 @@ def main():
         all_photos.extend(get_tg_web_photos(ch, now))
     print(f"Собрано: {len(all_videos)} видео, {len(all_photos)} фото.")
 
-    print(">>> Обработка Новокузнецка...")
-    process_novokuznetsk(all_videos, all_photos)
+    print(">>> Обработка Новокузнецка (только Telegram)...")
+    process_novokuznetsk([], []) # Передаем пустые списки, так как Новокузнецк теперь собирает сам
 
     print(">>> Обработка основного канала...")
     main_candidates = all_videos + all_photos
