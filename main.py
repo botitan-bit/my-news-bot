@@ -65,7 +65,6 @@ TG_NK_CHANNELS = [
 
 NK_KEYWORDS = ["новокузнецк", "кузбасс", "кемерово", "белово", "прокопьевск", "ленинск-кузнецкий", "междуреченск", "мыски", "осинники", "киселевск", "юрга", "анжеро-судженск", "мариинск", "тайга", "гуьевск", "таштагол", "полысаево", "калтан", "березовский", "топки"]
 
-# ДОБАВЛЕНЫ НОВЫЕ СЛОВА РЕКЛАМЫ
 AD_WORDS = [
     "реклама", "промокод", "скидка", "erid", "маркировка",
     "казино", "ставки", "криптовалюта", "инвестиции", "заработок",
@@ -94,17 +93,16 @@ def clean_text_junk(text):
     if not text: return ""
     text = html.unescape(text)
     
-    # Отрезаем рекламу в конце
-    lines = text.split('\n')
-    if lines:
-        last_line = lines[-1].strip()
-        if len(last_line) < 50 and any(k in last_line.lower() for k in ['max', 'мах', 'tg', 'тг', 'телеграм', 'telegram', 'подпишись']):
-            lines = lines[:-1]
-    text = '\n'.join(lines)
-
-    # Отсекаем всё после вертикальной черты, если там соцсети/каналы
+    # 1. Удаляем HTML-теги
+    text = re.sub(r'<[^>]+>', ' ', text)
+    
+    # 2. Удаляем ссылки и ГОЛЫЕ ДОМЕНЫ (например, city-n.ru)
+    text = re.sub(r'(?i)\b(?:https?://|www\.)\S+', '', text)
+    text = re.sub(r'(?i)\b[a-z0-9_-]+\.(?:ru|com|net|org|info|su|io|me|tv|biz|pro|рф)(?:/\S*)?\b', '', text)
+    text = re.sub(r'@\w+', '', text)
+    
+    # 3. Отрезаем рекламу в конце текста (хвосты)
     text = re.split(r'\|\s*(?=.*?(?:MAX|МАКС|TG|ТГ|Телеграм|Telegram|@|ВК|RUTUBE|ОК|rutube))', text, flags=re.IGNORECASE)[0]
-
     patterns = [
         r'📣?\s*прямой\s+эфир',
         r'🔴?\s*прямой\s+эфир',
@@ -129,16 +127,15 @@ def clean_text_junk(text):
     for p in patterns:
         text = re.split(r'(?i)' + p, text)[0]
         
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = re.sub(r'https?://\S+', '', text)
-    text = re.sub(r'@\w+', '', text)
-    
+    # 4. Удаляем эмодзи
     text = re.sub(r'[\U00010000-\U0010ffff]', '', text)
     text = re.sub(r'[\u2600-\u27BF]', '', text)
     
-    text = re.sub(r'\s+', ' ', text).strip()
-    text = re.sub(r'^[\.\,\-\:\s\|]+', '', text)
-    text = re.sub(r'[\.\,\-\:\s\|]+$', '', text)
+    # 5. Очищаем лишние пробелы, НО СОХРАНЯЕМ ПЕРЕНОСЫ СТРОК (до 2 подряд)
+    text = re.sub(r'[ \t]+', ' ', text)
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    
+    text = text.strip()
     return text
 
 def normalize_url(url, base=""):
@@ -287,7 +284,6 @@ def save_nk_published_title(t):
 def is_ad(text):
     lower = text.lower()
     
-    # Защита от рекламы эфиров и передач
     if re.search(r'\b\d{2}:\d{2}\b', lower) and any(w in lower for w in ['радио', 'эфир', 'трансляция', 'спутник']):
         print("    [Найдена реклама: эфир/радио]")
         return True
@@ -380,23 +376,12 @@ def get_tg_web_videos(channel_name, now):
             th = get_text_hash(clean)
             pid = post.get("data-post", "")
             
-            lines = [l.strip() for l in clean.split('\n') if l.strip()]
-            if len(lines) > 1:
-                title = lines[0]
-            else:
-                first_sentence = re.search(r'^([^.!?\n]+[.!?])', clean)
-                if first_sentence and len(first_sentence.group(1)) < 120:
-                    title = first_sentence.group(1).strip()
-                else:
-                    title = clean[:80].strip()
-                    last_space = title.rfind(' ')
-                    if last_space > 40:
-                        title = title[:last_space] + "..."
-                    else:
-                        title += "..."
+            # Используем кусок текста только для дедупликации, 
+            # а в make_hybrid_post передаем полный текст clean
+            temp_title = clean[:80].strip()
                 
             videos.append({
-                "title": title, "summary": clean, "age_hours": age,
+                "title": temp_title, "summary": clean, "age_hours": age,
                 "media_type": "video", "media_url": v_url,
                 "link": f"https://t.me/{pid}", "text_hash": th, "channel": channel_name
             })
@@ -445,23 +430,10 @@ def get_tg_web_photos(channel_name, now):
             th = get_text_hash(clean)
             pid = post.get("data-post", "")
             
-            lines = [l.strip() for l in clean.split('\n') if l.strip()]
-            if len(lines) > 1:
-                title = lines[0]
-            else:
-                first_sentence = re.search(r'^([^.!?\n]+[.!?])', clean)
-                if first_sentence and len(first_sentence.group(1)) < 120:
-                    title = first_sentence.group(1).strip()
-                else:
-                    title = clean[:80].strip()
-                    last_space = title.rfind(' ')
-                    if last_space > 40:
-                        title = title[:last_space] + "..."
-                    else:
-                        title += "..."
+            temp_title = clean[:80].strip()
                 
             photos.append({
-                "title": title, "summary": clean, "age_hours": age,
+                "title": temp_title, "summary": clean, "age_hours": age,
                 "media_type": "photo", "media_url": p_url,
                 "link": f"https://t.me/{pid}", "text_hash": th, "channel": channel_name
             })
@@ -635,19 +607,37 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
             pass
     return False
 
+# ИНТЕЛЛЕКТУАЛЬНОЕ ФОРМАТИРОВАНИЕ
 def make_hybrid_post(title, summary):
-    clean_title = clean_text_junk(title)
-    clean_summary = clean_text_junk(summary)
+    # summary содержит полный очищенный текст (с переносами строк)
+    text = summary 
     
-    if clean_title and clean_summary.startswith(clean_title):
-        clean_summary = clean_summary[len(clean_title):].strip()
-        
-    clean_summary = re.sub(r'^[\.\,\-\:\s]+', '', clean_summary)
-
-    if not clean_summary:
-        return f"<b>{clean_title}</b>"
-        
-    return f"<b>{clean_title}</b>\n\n{clean_summary}"
+    # Пытаемся найти четкий заголовок (разделенный \n\n)
+    parts = text.split('\n\n')
+    if len(parts) >= 2:
+        potential_title = parts[0].strip()
+        # Если первая часть короткая и не заканчивается на предлог/союз (значит, это реально заголовок)
+        if len(potential_title) < 150 and '\n' not in potential_title:
+            last_word = potential_title.split()[-1].lower() if potential_title.split() else ""
+            if last_word not in ['и', 'в', 'на', 'с', 'по', 'к', 'из', 'от', 'до', 'у', 'о', 'об', 'за', 'для', 'при']:
+                body = '\n\n'.join(parts[1:]).strip()
+                if not body:
+                    return f"<b>{potential_title}</b>"
+                return f"<b>{potential_title}</b>\n\n{body}"
+    
+    # Если четкого заголовка нет (текст сплошняком), выделяем первое предложение жирным
+    match = re.search(r'^([^.!?]+[.!?])\s*(.*)', text, re.DOTALL)
+    if match:
+        first_sentence = match.group(1).strip()
+        rest = match.group(2).strip()
+        if rest:
+            # "не делает отступ" -> используем обычный пробел или одинарный перенос
+            return f"<b>{first_sentence}</b> {rest}"
+        else:
+            return f"<b>{first_sentence}</b>"
+            
+    # Если вообще нет знаков препинания
+    return f"<b>{text}</b>"
 
 def process_novokuznetsk():
     if not TG_NK_CHANNEL_ID and not MAX_NK_CHANNEL_ID: 
