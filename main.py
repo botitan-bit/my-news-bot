@@ -91,17 +91,14 @@ def ensure_state_files_exist():
 
 def clean_text_junk(text):
     if not text: return ""
+    text = text.replace('\r\n', '\n')
     text = html.unescape(text)
     
-    # 1. Удаляем HTML-теги
     text = re.sub(r'<[^>]+>', ' ', text)
-    
-    # 2. Удаляем ссылки и ГОЛЫЕ ДОМЕНЫ (например, city-n.ru)
     text = re.sub(r'(?i)\b(?:https?://|www\.)\S+', '', text)
     text = re.sub(r'(?i)\b[a-z0-9_-]+\.(?:ru|com|net|org|info|su|io|me|tv|biz|pro|рф)(?:/\S*)?\b', '', text)
     text = re.sub(r'@\w+', '', text)
     
-    # 3. Отрезаем рекламу в конце текста (хвосты)
     text = re.split(r'\|\s*(?=.*?(?:MAX|МАКС|TG|ТГ|Телеграм|Telegram|@|ВК|RUTUBE|ОК|rutube))', text, flags=re.IGNORECASE)[0]
     patterns = [
         r'📣?\s*прямой\s+эфир',
@@ -127,15 +124,38 @@ def clean_text_junk(text):
     for p in patterns:
         text = re.split(r'(?i)' + p, text)[0]
         
-    # 4. Удаляем эмодзи
     text = re.sub(r'[\U00010000-\U0010ffff]', '', text)
     text = re.sub(r'[\u2600-\u27BF]', '', text)
     
-    # 5. Очищаем лишние пробелы, НО СОХРАНЯЕМ ПЕРЕНОСЫ СТРОК (до 2 подряд)
     text = re.sub(r'[ \t]+', ' ', text)
     text = re.sub(r'\n\s*\n', '\n\n', text)
-    
     text = text.strip()
+
+    # ПОСТРОЧНАЯ ОЧИСТКА ХВОСТОВ (газета, кайло, МАКС и т.д.)
+    lines = text.split('\n')
+    while lines:
+        last_line = lines[-1].strip()
+        if not last_line:
+            lines.pop()
+            continue
+        
+        lower = last_line.lower()
+        
+        # Если строка короткая и содержит маркеры канала/газеты
+        if len(lower) < 60 and any(k in lower for k in ['max', 'мах', 'tg', 'тг', 'телеграм', 'telegram', 'подпишись', 'газета', 'rutube', 'вк', 'vk', 'ок', 'кайло']):
+            lines.pop()
+            continue
+            
+        # Если строка кончается на "в" (типа "«Кузнецкое кайло» в")
+        if len(lower) < 50 and lower.endswith(' в'):
+            lines.pop()
+            continue
+            
+        break
+        
+    text = '\n'.join(lines).strip()
+    text = re.sub(r'^[\.\,\-\:\s\|]+', '', text)
+    text = re.sub(r'[\.\,\-\:\s\|]+$', '', text)
     return text
 
 def normalize_url(url, base=""):
@@ -376,8 +396,6 @@ def get_tg_web_videos(channel_name, now):
             th = get_text_hash(clean)
             pid = post.get("data-post", "")
             
-            # Используем кусок текста только для дедупликации, 
-            # а в make_hybrid_post передаем полный текст clean
             temp_title = clean[:80].strip()
                 
             videos.append({
@@ -607,36 +625,34 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
             pass
     return False
 
-# ИНТЕЛЛЕКТУАЛЬНОЕ ФОРМАТИРОВАНИЕ
+# ИНТЕЛЛЕКТУАЛЬНОЕ ФОРМАТИРОВАНИЕ ПОСТА
 def make_hybrid_post(title, summary):
-    # summary содержит полный очищенный текст (с переносами строк)
     text = summary 
     
-    # Пытаемся найти четкий заголовок (разделенный \n\n)
-    parts = text.split('\n\n')
-    if len(parts) >= 2:
+    # Пытаемся найти четкий заголовок (разделенный \n)
+    parts = text.split('\n', 1)
+    if len(parts) == 2:
         potential_title = parts[0].strip()
-        # Если первая часть короткая и не заканчивается на предлог/союз (значит, это реально заголовок)
-        if len(potential_title) < 150 and '\n' not in potential_title:
+        # Если первая строка короткая и не заканчивается на предлог/союз
+        if len(potential_title) < 150:
             last_word = potential_title.split()[-1].lower() if potential_title.split() else ""
             if last_word not in ['и', 'в', 'на', 'с', 'по', 'к', 'из', 'от', 'до', 'у', 'о', 'об', 'за', 'для', 'при']:
-                body = '\n\n'.join(parts[1:]).strip()
+                body = parts[1].strip()
                 if not body:
                     return f"<b>{potential_title}</b>"
+                # Если есть заголовок и статья с пробелом, копируем в точности
                 return f"<b>{potential_title}</b>\n\n{body}"
     
-    # Если четкого заголовка нет (текст сплошняком), выделяем первое предложение жирным
+    # Если четкого заголовка нет (текст сплошняком), выделяем первое предложение жирным без отступа
     match = re.search(r'^([^.!?]+[.!?])\s*(.*)', text, re.DOTALL)
     if match:
         first_sentence = match.group(1).strip()
         rest = match.group(2).strip()
         if rest:
-            # "не делает отступ" -> используем обычный пробел или одинарный перенос
             return f"<b>{first_sentence}</b> {rest}"
         else:
             return f"<b>{first_sentence}</b>"
             
-    # Если вообще нет знаков препинания
     return f"<b>{text}</b>"
 
 def process_novokuznetsk():
