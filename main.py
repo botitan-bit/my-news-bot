@@ -56,33 +56,16 @@ SIGNATURE_NK_MAX = (
     '**[Телеграм](https://t.me/nashNVKZ)**'
 )
 
-NK_RSS_FEEDS = [
-    "https://ria.ru/export/rss2/index.xml",
-    "http://www.kuzbassfm.ru/rss/news.xml",
-    "https://kemerovo42.info/feed/",
-    "https://kuzbass.media/feed/",
-    "https://vse42.ru/rss/news.xml",
-    "https://www.kem.kp.ru/rss/",
-]
-
-# Каналы для основного канала
 TG_CHANNELS = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi", "zhest_na_dorogah"]
 
-# НОВЫЙ СПИСОК КАНАЛОВ ДЛЯ НОВОКУЗНЕЦКА
 TG_NK_CHANNELS = [
-    "novokuznetsklife",      # Бардокин NEWS Новокузнецк
-    "news_novokuznetsk",     # Новости Новокузнецк
-    "kuzpress",              # КузПресс
-    "wwwcitynru",            # Город Новостей (Новокузнецк)
-    "NWD_xcWbz_g3Zjcy",      # Новокузнецк 24/7
-    "kuzbassinfo",           # Кузбасс инфо
-    "mediakailo",            # Кузнецкое кайло
-    "region42_kuzbass",      # Регион 42 | Кузбасс
-    "kuzbass_now"            # Кузбасс сейчас
+    "novokuznetsklife", "news_novokuznetsk", "kuzpress", "wwwcitynru", 
+    "NWD_xcWbz_g3Zjcy", "kuzbassinfo", "mediakailo", "region42_kuzbass", "kuzbass_now"
 ]
 
 NK_KEYWORDS = ["новокузнецк", "кузбасс", "кемерово", "белово", "прокопьевск", "ленинск-кузнецкий", "междуреченск", "мыски", "осинники", "киселевск", "юрга", "анжеро-судженск", "мариинск", "тайга", "гуьевск", "таштагол", "полысаево", "калтан", "березовский", "топки"]
 
+# ДОБАВЛЕНЫ НОВЫЕ СЛОВА РЕКЛАМЫ
 AD_WORDS = [
     "реклама", "промокод", "скидка", "erid", "маркировка",
     "казино", "ставки", "криптовалюта", "инвестиции", "заработок",
@@ -91,7 +74,8 @@ AD_WORDS = [
     "подарок", "бесплатно", "только сегодня", "успей", "торопись", "оформить заказ",
     "заказать", "купить", "магазин", "акция", "промо", "розыгрыш",
     "партнерство", "партнёрство", "альянс", "кэшбэк", "кэшбек", "депозит", "привилегии",
-    "альфа", "альфа-банк", "альфа банк", "сбер", "сбербанк", "тинькофф", "т-банк", "втб", "росбанк", "банк", "кредит", "ипотека"
+    "альфа", "альфа-банк", "альфа банк", "сбер", "сбербанк", "тинькофф", "т-банк", "втб", "росбанк", "банк", "кредит", "ипотека",
+    "смотрите здесь", "rutube", "радио", "трансляция", "бочарик"
 ]
 
 IMG_AD_PHRASES = ["8-800", "8 800", "ооо", "реклама", "заказать", "erid", "промокод", "скидка", "змппсм", "агротрак"]
@@ -110,6 +94,7 @@ def clean_text_junk(text):
     if not text: return ""
     text = html.unescape(text)
     
+    # Отрезаем рекламу в конце
     lines = text.split('\n')
     if lines:
         last_line = lines[-1].strip()
@@ -117,7 +102,8 @@ def clean_text_junk(text):
             lines = lines[:-1]
     text = '\n'.join(lines)
 
-    text = re.split(r'\|\s*(?=.*?(?:MAX|МАКС|TG|ТГ|Телеграм|Telegram|@))', text, flags=re.IGNORECASE)[0]
+    # Отсекаем всё после вертикальной черты, если там соцсети/каналы
+    text = re.split(r'\|\s*(?=.*?(?:MAX|МАКС|TG|ТГ|Телеграм|Telegram|@|ВК|RUTUBE|ОК|rutube))', text, flags=re.IGNORECASE)[0]
 
     patterns = [
         r'📣?\s*прямой\s+эфир',
@@ -129,6 +115,7 @@ def clean_text_junk(text):
         r'видосы\s+и\s+оперативные\s+новости',
         r'смотри\s+в\s+нашем',
         r'смотрите\s+в\s+нашем',
+        r'смотрите\s+здесь',
         r'подписывайтесь\s+на\s+наш',
         r'подписывайся\s+на\s+наш',
         r'переходите\s+в\s+наш',
@@ -299,6 +286,12 @@ def save_nk_published_title(t):
 
 def is_ad(text):
     lower = text.lower()
+    
+    # Защита от рекламы эфиров и передач
+    if re.search(r'\b\d{2}:\d{2}\b', lower) and any(w in lower for w in ['радио', 'эфир', 'трансляция', 'спутник']):
+        print("    [Найдена реклама: эфир/радио]")
+        return True
+        
     for w in AD_WORDS:
         pattern = r'(?<![а-яёa-z])' + re.escape(w) + r'(?![а-яёa-z])'
         if re.search(pattern, lower): 
@@ -476,7 +469,6 @@ def get_tg_web_photos(channel_name, now):
         pass
     return photos
 
-# НОВАЯ ФУНКЦИЯ: Сбор кандидатов для Новокузнецка ТОЛЬКО из Telegram-каналов
 def get_novokuznetsk_tg_candidates(now):
     candidates = []
     posted_nk_videos = get_posted_nk_videos()
@@ -486,19 +478,15 @@ def get_novokuznetsk_tg_candidates(now):
     
     print("\n--- Сбор новостей Новокузнецка из Telegram-каналов ---")
     
-    # Проходим по каждому каналу из нового списка
     for ch in TG_NK_CHANNELS:
         print(f"  Сканируем @{ch}...")
-        # Собираем видео и фото из канала
         ch_videos = get_tg_web_videos(ch, now)
         ch_photos = get_tg_web_photos(ch, now)
         
         for item in ch_videos + ch_photos:
-            # Ищем ключевые слова в тексте поста
             if not any(k in item['summary'].lower() for k in NK_KEYWORDS):
                 continue
                 
-            # Проверяем на дубликаты
             if item['media_url'] in posted_nk_videos or item['media_url'] in posted_nk_photos:
                 continue
             if is_duplicate_text(item['summary'], posted_nk_hashes):
@@ -506,7 +494,6 @@ def get_novokuznetsk_tg_candidates(now):
             if is_duplicate_title(item['title'], recent_nk_titles):
                 continue
                 
-            # Определяем приоритет (насколько это "новокузнецкая" новость)
             item['priority'] = get_nk_priority(item['summary'])
             item['source_priority'] = 0
             
@@ -662,20 +649,18 @@ def make_hybrid_post(title, summary):
         
     return f"<b>{clean_title}</b>\n\n{clean_summary}"
 
-def process_novokuznetsk(tg_videos, tg_photos):
+def process_novokuznetsk():
     if not TG_NK_CHANNEL_ID and not MAX_NK_CHANNEL_ID: 
         return
         
     now = datetime.now(timezone.utc)
     
-    # 1. Собираем кандидатов из Telegram-каналов Новокузнецка/Кузбасса
     nk_candidates = get_novokuznetsk_tg_candidates(now)
     
     if not nk_candidates:
         print("Новокузнецк: после фильтрации ничего не осталось.")
         return
         
-    # Сортируем: сначала видео, потом по приоритету (Новокузнецк > Кузбасс) и свежести
     nk_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['priority'], x['age_hours']))
     
     seen = set()
@@ -718,7 +703,7 @@ def main():
     print(f"Собрано: {len(all_videos)} видео, {len(all_photos)} фото.")
 
     print(">>> Обработка Новокузнецка (только Telegram)...")
-    process_novokuznetsk([], []) # Передаем пустые списки, так как Новокузнецк теперь собирает сам
+    process_novokuznetsk()
 
     print(">>> Обработка основного канала...")
     main_candidates = all_videos + all_photos
