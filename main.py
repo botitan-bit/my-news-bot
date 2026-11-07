@@ -91,13 +91,13 @@ def ensure_state_files_exist():
 
 def clean_text_junk(text):
     if not text: return ""
-    text = text.replace('\r\n', '\n')
     text = html.unescape(text)
     
+    # Заменяем ссылки и домены на пробелы (чтобы не ломать слова)
+    text = re.sub(r'(?i)\b(?:https?://|www\.)\S+', ' ', text)
+    text = re.sub(r'(?i)\b[a-z0-9_-]+\.(?:ru|com|net|org|info|su|io|me|tv|biz|pro|рф)(?:/\S*)?\b', ' ', text)
+    text = re.sub(r'@\w+', ' ', text)
     text = re.sub(r'<[^>]+>', ' ', text)
-    text = re.sub(r'(?i)\b(?:https?://|www\.)\S+', '', text)
-    text = re.sub(r'(?i)\b[a-z0-9_-]+\.(?:ru|com|net|org|info|su|io|me|tv|biz|pro|рф)(?:/\S*)?\b', '', text)
-    text = re.sub(r'@\w+', '', text)
     
     text = re.split(r'\|\s*(?=.*?(?:MAX|МАКС|TG|ТГ|Телеграм|Telegram|@|ВК|RUTUBE|ОК|rutube))', text, flags=re.IGNORECASE)[0]
     patterns = [
@@ -351,6 +351,21 @@ def get_nk_priority(text):
     if any(city in text_lower for city in NK_KEYWORDS[2:]): return 3
     return 99
 
+# НОВАЯ ФУНКЦИЯ ДЛЯ СКАЧИВАНИЯ ПОЛНОГО ТЕКСТА С САЙТА
+def fetch_full_text(url):
+    try:
+        resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=REQUEST_TIMEOUT, verify=False)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            article = soup.select_one('article') or soup.select_one('.article-body') or soup.select_one('.news-text') or soup.select_one('.entry-content')
+            if article:
+                paragraphs = [p.get_text(strip=True) for p in article.find_all('p')]
+                full_text = "\n\n".join(paragraphs)
+                return full_text
+    except:
+        pass
+    return None
+
 def get_tg_web_videos(channel_name, now):
     videos = []
     url = f"https://t.me/s/{channel_name}"
@@ -385,6 +400,18 @@ def get_tg_web_videos(channel_name, now):
             if not txt: continue
             
             clean = txt.get_text("\n", strip=True)
+            
+            # ФИКС: Если текст короткий и есть ссылка на сайт, забираем полный текст
+            if len(clean) < 200:
+                links = txt.find_all('a', href=True)
+                for l in links:
+                    href = l['href']
+                    if 'http' in href and 't.me' not in href:
+                        full_text = fetch_full_text(href)
+                        if full_text and len(full_text) > len(clean):
+                            clean = full_text
+                            break
+                            
             clean = clean_text_junk(clean)
             
             if len(clean) < 20: continue
@@ -437,6 +464,18 @@ def get_tg_web_photos(channel_name, now):
             if not txt: continue
             
             clean = txt.get_text("\n", strip=True)
+            
+            # ФИКС: Если текст короткий и есть ссылка на сайт, забираем полный текст
+            if len(clean) < 200:
+                links = txt.find_all('a', href=True)
+                for l in links:
+                    href = l['href']
+                    if 'http' in href and 't.me' not in href:
+                        full_text = fetch_full_text(href)
+                        if full_text and len(full_text) > len(clean):
+                            clean = full_text
+                            break
+                            
             clean = clean_text_junk(clean)
             
             if len(clean) < 20: continue
@@ -624,8 +663,8 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
 
 def make_hybrid_post(title, summary):
     text = summary.strip()
-
-    # 1. Ищем четкий заголовок (разделенный \n)
+    
+    # 1. Если есть новая строка (заголовок отделен)
     parts = text.split('\n', 1)
     if len(parts) == 2:
         potential_title = parts[0].strip()
@@ -634,9 +673,10 @@ def make_hybrid_post(title, summary):
             last_word = potential_title.split()[-1].lower() if potential_title.split() else ""
             if last_word not in ['и', 'в', 'на', 'с', 'по', 'к', 'из', 'от', 'до', 'у', 'о', 'об', 'за', 'для', 'при']:
                 return f"<b>{potential_title}</b>\n\n{body}"
+        # Если нет заголовка, но есть новая строка:
         return f"<b>{potential_title}</b> {body}"
 
-    # 2. Пытаемся разделить по первому предложению (точка, вопрос, восклицание)
+    # 2. Если нет новой строки, ищем первое предложение
     match = re.search(r'^([^.!?]+[.!?])\s*(.*)', text, re.DOTALL)
     if match:
         first_sentence = match.group(1).strip()
@@ -644,8 +684,8 @@ def make_hybrid_post(title, summary):
         if rest:
             return f"<b>{first_sentence}</b> {rest}"
         return f"<b>{first_sentence}</b>"
-
-    # 3. Если нет точек, пытаемся по двоеточию или тире (как в скрине)
+        
+    # 3. Если точек нет, ищем двоеточие
     match = re.search(r'^([^:–—-]+[:–—-])\s*(.*)', text, re.DOTALL)
     if match:
         first = match.group(1).strip()
@@ -653,8 +693,8 @@ def make_hybrid_post(title, summary):
         if rest and len(rest) > 20:
             return f"<b>{first}</b> {rest}"
         return f"<b>{first}</b>"
-    
-    # 4. Если вообще ничего не подошло — выводим просто текстом (без жирного), чтобы не было пустого поста
+
+    # 4. Если вообще нет знаков препинания, НЕ ДЕЛАЕМ ТЕКСТ ЖИРНЫМ
     return text
 
 def process_novokuznetsk():
