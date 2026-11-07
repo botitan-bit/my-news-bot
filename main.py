@@ -131,7 +131,6 @@ def clean_text_junk(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     text = text.strip()
 
-    # ПОСТРОЧНАЯ ОЧИСТКА ХВОСТОВ (газета, кайло, МАКС и т.д.)
     lines = text.split('\n')
     while lines:
         last_line = lines[-1].strip()
@@ -141,12 +140,10 @@ def clean_text_junk(text):
         
         lower = last_line.lower()
         
-        # Если строка короткая и содержит маркеры канала/газеты
         if len(lower) < 60 and any(k in lower for k in ['max', 'мах', 'tg', 'тг', 'телеграм', 'telegram', 'подпишись', 'газета', 'rutube', 'вк', 'vk', 'ок', 'кайло']):
             lines.pop()
             continue
             
-        # Если строка кончается на "в" (типа "«Кузнецкое кайло» в")
         if len(lower) < 50 and lower.endswith(' в'):
             lines.pop()
             continue
@@ -625,35 +622,40 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
             pass
     return False
 
-# ИНТЕЛЛЕКТУАЛЬНОЕ ФОРМАТИРОВАНИЕ ПОСТА
 def make_hybrid_post(title, summary):
-    text = summary 
-    
-    # Пытаемся найти четкий заголовок (разделенный \n)
+    text = summary.strip()
+
+    # 1. Ищем четкий заголовок (разделенный \n)
     parts = text.split('\n', 1)
     if len(parts) == 2:
         potential_title = parts[0].strip()
-        # Если первая строка короткая и не заканчивается на предлог/союз
-        if len(potential_title) < 150:
+        body = parts[1].strip()
+        if len(potential_title) < 150 and body:
             last_word = potential_title.split()[-1].lower() if potential_title.split() else ""
             if last_word not in ['и', 'в', 'на', 'с', 'по', 'к', 'из', 'от', 'до', 'у', 'о', 'об', 'за', 'для', 'при']:
-                body = parts[1].strip()
-                if not body:
-                    return f"<b>{potential_title}</b>"
-                # Если есть заголовок и статья с пробелом, копируем в точности
                 return f"<b>{potential_title}</b>\n\n{body}"
-    
-    # Если четкого заголовка нет (текст сплошняком), выделяем первое предложение жирным без отступа
+        return f"<b>{potential_title}</b> {body}"
+
+    # 2. Пытаемся разделить по первому предложению (точка, вопрос, восклицание)
     match = re.search(r'^([^.!?]+[.!?])\s*(.*)', text, re.DOTALL)
     if match:
         first_sentence = match.group(1).strip()
         rest = match.group(2).strip()
         if rest:
             return f"<b>{first_sentence}</b> {rest}"
-        else:
-            return f"<b>{first_sentence}</b>"
-            
-    return f"<b>{text}</b>"
+        return f"<b>{first_sentence}</b>"
+
+    # 3. Если нет точек, пытаемся по двоеточию или тире (как в скрине)
+    match = re.search(r'^([^:–—-]+[:–—-])\s*(.*)', text, re.DOTALL)
+    if match:
+        first = match.group(1).strip()
+        rest = match.group(2).strip()
+        if rest and len(rest) > 20:
+            return f"<b>{first}</b> {rest}"
+        return f"<b>{first}</b>"
+    
+    # 4. Если вообще ничего не подошло — выводим просто текстом (без жирного), чтобы не было пустого поста
+    return text
 
 def process_novokuznetsk():
     if not TG_NK_CHANNEL_ID and not MAX_NK_CHANNEL_ID: 
