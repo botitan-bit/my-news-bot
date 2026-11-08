@@ -102,16 +102,14 @@ def clean_text_junk(text):
     if not text: return ""
     text = html.unescape(text)
     
-    # 1. Заменяем ссылки и домены на пробелы
     text = re.sub(r'(?i)\b(?:https?://|www\.)\S+', ' ', text)
     text = re.sub(r'(?i)\b[a-z0-9_-]+\.(?:ru|com|net|org|info|su|io|me|tv|biz|pro|рф)(?:/\S*)?\b', ' ', text)
     text = re.sub(r'@\w+', ' ', text)
     text = re.sub(r'<[^>]+>', ' ', text)
     
-    # 2. Отрезаем рекламу
     text = re.split(r'\|\s*(?=.*?(?:MAX|МАКС|TG|ТГ|Телеграм|Telegram|@|ВК|RUTUBE|ОК|rutube))', text, flags=re.IGNORECASE)[0]
     patterns = [
-        r'\b(подписаться|подписывайтесь|подпишись)\b', # Отрезаем слово "подписаться"
+        r'\b(подписаться|подписывайтесь|подпишись)\b',
         r'📣?\s*прямой\s+эфир',
         r'🔴?\s*прямой\s+эфир',
         r'💰\s*деньги\s+в\s+эфире',
@@ -140,7 +138,6 @@ def clean_text_junk(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     text = text.strip()
 
-    # 3. Построчная очистка хвостов
     lines = text.split('\n')
     while lines:
         last_line = lines[-1].strip()
@@ -176,7 +173,6 @@ def is_bad_image_url(url):
     lower = url.lower()
     return any(k in lower for k in ['banner', 'reklama', 'ad_', 'adv', 'logo', 'icon', 'avatar', 'pixel', 'stub', 'thumb'])
 
-# ОБЛЕГЧЕННЫЙ ФИЛЬТР КАРТИНОК
 def is_bad_image(image_bytes, title_text=""):
     try:
         img = Image.open(BytesIO(image_bytes))
@@ -202,13 +198,11 @@ def is_bad_image(image_bytes, title_text=""):
         clean_text = re.sub(r'[^\w\s]', '', ' '.join(words)).strip()
         lower_text = clean_text.lower()
         
-        # Ищем только рекламные маркеры
         for phrase in IMG_AD_PHRASES:
             if phrase in lower_text: 
                 print(f"    [Отклонено: рекламный баннер ('{phrase}')]")
                 return True
 
-        # Отсекаем чисто белый/черный фон (заглушки)
         if stddev < 15: 
             print(f"    [Отклонено: однотонная графика] (StdDev {stddev})")
             return True
@@ -362,18 +356,35 @@ def get_nk_priority(text):
     if any(city in text_lower for city in NK_KEYWORDS[2:]): return 3
     return 99
 
+# ОБНОВЛЕННАЯ ФУНКЦИЯ ПОИСКА ТЕКСТА СТАТЬИ
 def fetch_full_text(url):
     try:
         resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=REQUEST_TIMEOUT, verify=False)
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
+            
+            # 1. Ищем стандартные контейнеры
             article = soup.select_one('article') or soup.select_one('.article-body') or soup.select_one('.news-text') or soup.select_one('.entry-content')
             if article:
                 paragraphs = [p.get_text(strip=True) for p in article.find_all('p')]
-                full_text = "\n\n".join(paragraphs)
-                return full_text
-    except:
-        pass
+                text = "\n\n".join([p for p in paragraphs if len(p) > 20])
+                if len(text) > 50:
+                    return text
+                    
+            # 2. Запасной вариант: Мета-описание
+            og_desc = soup.select_one('meta[property="og:description"]')
+            if og_desc and og_desc.get('content'):
+                desc = og_desc.get('content').strip()
+                if len(desc) > 50:
+                    return desc
+                    
+            # 3. Жесткий парсинг: все абзацы на странице
+            paragraphs = [p.get_text(strip=True) for p in soup.find_all('p')]
+            text = "\n\n".join([p for p in paragraphs if len(p) > 30])
+            if len(text) > 50:
+                return text
+    except Exception as e:
+        print(f"    [Ошибка парсинга текста статьи] {e}")
     return None
 
 def get_tg_web_videos(channel_name, now):
@@ -381,14 +392,10 @@ def get_tg_web_videos(channel_name, now):
     url = f"https://t.me/s/{channel_name}"
     try:
         resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
-        if resp.status_code != 200: 
-            print(f"  [{channel_name}] HTTP {resp.status_code}")
-            return []
+        if resp.status_code != 200: return []
         soup = BeautifulSoup(resp.text, "html.parser")
         posts = soup.select(".tgme_widget_message[data-post]")
-        if not posts: 
-            print(f"  [{channel_name}] Постов не найдено")
-            return []
+        if not posts: return []
         
         for post in reversed(posts):
             tt = post.select_one(".tgme_widget_message_date time")
@@ -414,19 +421,23 @@ def get_tg_web_videos(channel_name, now):
             if not txt: continue
             
             clean = txt.get_text("\n", strip=True)
+            original_title = clean.split('\n')[0].strip()
             
-            if len(clean) < 200:
+            # УМНЫЙ ПЕРЕХОД ПО ССЫЛКЕ: Если текст короткий или есть "Читать далее" / "..."
+            if len(clean) < 300 or "читать далее" in clean.lower() or "подробнее" in clean.lower() or clean.endswith("..."):
                 links = txt.find_all('a', href=True)
                 for l in links:
                     href = l['href']
-                    if 'http' in href and 't.me' not in href:
+                    if 'http' in href and 't.me' not in href and 'tg://' not in href:
                         full_text = fetch_full_text(href)
                         if full_text and len(full_text) > len(clean):
-                            clean = full_text
+                            # Убираем дубликат заголовка в начале полного текста
+                            if full_text.lower().startswith(original_title.lower()):
+                                full_text = full_text[len(original_title):].strip()
+                            clean = f"{original_title}\n\n{full_text}"
                             break
                             
             clean = clean_text_junk(clean)
-            
             if len(clean) < 20: continue
             if is_ad(clean): continue
             
@@ -448,14 +459,10 @@ def get_tg_web_photos(channel_name, now):
     url = f"https://t.me/s/{channel_name}"
     try:
         resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
-        if resp.status_code != 200: 
-            print(f"  [{channel_name}] HTTP {resp.status_code}")
-            return []
+        if resp.status_code != 200: return []
         soup = BeautifulSoup(resp.text, "html.parser")
         posts = soup.select(".tgme_widget_message[data-post]")
-        if not posts: 
-            print(f"  [{channel_name}] Постов не найдено")
-            return []
+        if not posts: return []
         
         for post in reversed(posts):
             tt = post.select_one(".tgme_widget_message_date time")
@@ -480,19 +487,21 @@ def get_tg_web_photos(channel_name, now):
             if not txt: continue
             
             clean = txt.get_text("\n", strip=True)
+            original_title = clean.split('\n')[0].strip()
             
-            if len(clean) < 200:
+            if len(clean) < 300 or "читать далее" in clean.lower() or "подробнее" in clean.lower() or clean.endswith("..."):
                 links = txt.find_all('a', href=True)
                 for l in links:
                     href = l['href']
-                    if 'http' in href and 't.me' not in href:
+                    if 'http' in href and 't.me' not in href and 'tg://' not in href:
                         full_text = fetch_full_text(href)
                         if full_text and len(full_text) > len(clean):
-                            clean = full_text
+                            if full_text.lower().startswith(original_title.lower()):
+                                full_text = full_text[len(original_title):].strip()
+                            clean = f"{original_title}\n\n{full_text}"
                             break
                             
             clean = clean_text_junk(clean)
-            
             if len(clean) < 20: continue
             if is_ad(clean): continue
             
@@ -542,7 +551,6 @@ def get_novokuznetsk_tg_candidates(now):
     print(f"  Собрано кандидатов из TG: {len(candidates)}")
     return candidates
 
-# ВОССТАНОВЛЕННЫЙ РЕЗЕРВНЫЙ СБОР ИЗ RSS
 def get_novokuznetsk_rss_candidates(now):
     posted_hashes = get_posted_nk_hashes()
     posted_photos = get_posted_nk_photos()
@@ -759,7 +767,7 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
 def make_hybrid_post(title, summary):
     text = summary.strip()
     
-    # Если в тексте уже есть заголовок с новой строки
+    # Если есть перенос строки (Заголовок \n Текст)
     parts = text.split('\n', 1)
     if len(parts) == 2:
         potential_title = parts[0].strip()
@@ -779,7 +787,7 @@ def make_hybrid_post(title, summary):
             return f"<b>{first_sentence}</b> {rest}"
         return f"<b>{first_sentence}</b>"
         
-    # Если точек нет, ищем двоеточие
+    # Двоеточие
     match = re.search(r'^([^:–—-]+[:–—-])\s*(.*)', text, re.DOTALL)
     if match:
         first = match.group(1).strip()
@@ -787,6 +795,9 @@ def make_hybrid_post(title, summary):
         if rest and len(rest) > 20:
             return f"<b>{first}</b> {rest}"
         return f"<b>{first}</b>"
+
+    if len(text) < 100:
+        return f"<b>{text}</b>"
 
     return text
 
@@ -798,7 +809,6 @@ def process_novokuznetsk():
     
     nk_candidates = get_novokuznetsk_tg_candidates(now)
     
-    # РЕЗЕРВНЫЙ ВАРИАНТ: Если TG пуст, идем в RSS
     if not nk_candidates:
         print("Резервный сбор из RSS Новокузнецка...")
         nk_candidates = get_novokuznetsk_rss_candidates(now)
