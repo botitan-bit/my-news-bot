@@ -56,11 +56,20 @@ SIGNATURE_NK_MAX = (
     '**[Телеграм](https://t.me/nashNVKZ)**'
 )
 
+NK_RSS_FEEDS = [
+    "https://ria.ru/export/rss2/index.xml",
+    "http://www.kuzbassfm.ru/rss/news.xml",
+    "https://kemerovo42.info/feed/",
+    "https://kuzbass.media/feed/",
+    "https://vse42.ru/rss/news.xml",
+    "https://www.kem.kp.ru/rss/",
+]
+
 TG_CHANNELS = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi", "zhest_na_dorogah"]
 
 TG_NK_CHANNELS = [
     "novokuznetsklife", "news_novokuznetsk", "kuzpress", "wwwcitynru", 
-    "NWD_xcWbz_g3Zjcy", "kuzbassinfo", "mediakailo", "region42_kuzbass", "kuzbass_now"
+    "kuzbassinfo", "mediakailo", "region42_kuzbass", "kuzbass_now"
 ]
 
 NK_KEYWORDS = ["новокузнецк", "кузбасс", "кемерово", "белово", "прокопьевск", "ленинск-кузнецкий", "междуреченск", "мыски", "осинники", "киселевск", "юрга", "анжеро-судженск", "мариинск", "тайга", "гуьевск", "таштагол", "полысаево", "калтан", "березовский", "топки"]
@@ -77,7 +86,7 @@ AD_WORDS = [
     "смотрите здесь", "rutube", "радио", "трансляция", "бочарик"
 ]
 
-IMG_AD_PHRASES = ["8-800", "8 800", "ооо", "реклама", "заказать", "erid", "промокод", "скидка", "змппсм", "агротрак"]
+IMG_AD_PHRASES = ["8-800", "8 800", "ооо", "реклама", "заказать", "erid", "промокод", "скидка", "змппсм", "агротрак", "подпишись", "подписаться"]
 
 def ensure_state_files_exist():
     for file in [
@@ -93,14 +102,16 @@ def clean_text_junk(text):
     if not text: return ""
     text = html.unescape(text)
     
-    # Заменяем ссылки и домены на пробелы (чтобы не ломать слова)
+    # 1. Заменяем ссылки и домены на пробелы
     text = re.sub(r'(?i)\b(?:https?://|www\.)\S+', ' ', text)
     text = re.sub(r'(?i)\b[a-z0-9_-]+\.(?:ru|com|net|org|info|su|io|me|tv|biz|pro|рф)(?:/\S*)?\b', ' ', text)
     text = re.sub(r'@\w+', ' ', text)
     text = re.sub(r'<[^>]+>', ' ', text)
     
+    # 2. Отрезаем рекламу
     text = re.split(r'\|\s*(?=.*?(?:MAX|МАКС|TG|ТГ|Телеграм|Telegram|@|ВК|RUTUBE|ОК|rutube))', text, flags=re.IGNORECASE)[0]
     patterns = [
+        r'\b(подписаться|подписывайтесь|подпишись)\b', # Отрезаем слово "подписаться"
         r'📣?\s*прямой\s+эфир',
         r'🔴?\s*прямой\s+эфир',
         r'💰\s*деньги\s+в\s+эфире',
@@ -111,8 +122,6 @@ def clean_text_junk(text):
         r'смотри\s+в\s+нашем',
         r'смотрите\s+в\s+нашем',
         r'смотрите\s+здесь',
-        r'подписывайтесь\s+на\s+наш',
-        r'подписывайся\s+на\s+наш',
         r'переходите\s+в\s+наш',
         r'переходи\s+в\s+наш',
         r'все\s+самое\s+важное',
@@ -131,6 +140,7 @@ def clean_text_junk(text):
     text = re.sub(r'\n\s*\n', '\n\n', text)
     text = text.strip()
 
+    # 3. Построчная очистка хвостов
     lines = text.split('\n')
     while lines:
         last_line = lines[-1].strip()
@@ -166,13 +176,14 @@ def is_bad_image_url(url):
     lower = url.lower()
     return any(k in lower for k in ['banner', 'reklama', 'ad_', 'adv', 'logo', 'icon', 'avatar', 'pixel', 'stub', 'thumb'])
 
+# ОБЛЕГЧЕННЫЙ ФИЛЬТР КАРТИНОК
 def is_bad_image(image_bytes, title_text=""):
     try:
         img = Image.open(BytesIO(image_bytes))
         W, H = img.size
         
         if W < 300 or H < 200:
-            print(f"    [Отклонено: слишком маленькая] {W}x{H} (нужно 300x200)")
+            print(f"    [Отклонено: слишком маленькая] {W}x{H}")
             return True
 
         if W * H == 0: return True
@@ -184,48 +195,24 @@ def is_bad_image(image_bytes, title_text=""):
         data = pytesseract.image_to_data(img, lang='rus+eng', output_type=pytesseract.Output.DICT)
 
         words = []
-        total_area = 0
         for i in range(len(data.get('text', []))):
             w = (data['text'][i] or '').strip()
-            if not w: continue
-            try: conf = int(float(data['conf'][i]))
-            except: conf = -1
-            if conf < 50: continue
-            ww = int(data['width'][i] or 0)
-            hh = int(data['height'][i] or 0)
-            words.append(w)
-            total_area += ww * hh
+            if w: words.append(w)
 
         clean_text = re.sub(r'[^\w\s]', '', ' '.join(words)).strip()
-        if len(clean_text) <= 40: return False
-
-        coverage = total_area / float(W * H)
-        snippet = clean_text[:80].replace('\n', ' ')
-        print(f"    [OCR] {len(clean_text)} симв., покрытие {coverage:.0%}, StdDev {stddev:.0f}: {snippet!r}")
-
-        if stddev < 25: 
-            print("    [Отклонено: однотонная графика/обложка]")
-            return True
-
-        if title_text and len(clean_text) > 10:
-            clean_t = re.sub(r'[^\w\s]', '', title_text.lower())
-            t_words = set(clean_t.split())
-            o_words = set(clean_text.lower().split())
-            if t_words:
-                overlap = len(t_words.intersection(o_words)) / len(t_words)
-                if overlap > 0.5: 
-                    print("    [Отклонено: обложка содержит заголовок новости]")
-                    return True
-
         lower_text = clean_text.lower()
+        
+        # Ищем только рекламные маркеры
         for phrase in IMG_AD_PHRASES:
             if phrase in lower_text: 
-                print("    [Отклонено: рекламный баннер]")
+                print(f"    [Отклонено: рекламный баннер ('{phrase}')]")
                 return True
 
-        if len(clean_text) > 150 and coverage > 0.25: 
-            print("    [Отклонено: картинка с большим текстом]")
+        # Отсекаем чисто белый/черный фон (заглушки)
+        if stddev < 15: 
+            print(f"    [Отклонено: однотонная графика] (StdDev {stddev})")
             return True
+
     except Exception as e:
         print(f"    [Отклонено: ошибка чтения картинки] {e}")
         return True
@@ -344,6 +331,30 @@ def extract_direct_video_url(url):
         pass
     return None
 
+def extract_image_from_url(url):
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    try:
+        resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT, allow_redirects=True, verify=False)
+        if resp.status_code != 200: return None
+        soup = BeautifulSoup(resp.text, "html.parser")
+        
+        og_img = soup.select_one('meta[property="og:image"]')
+        if og_img and og_img.get("content"):
+            img_url = normalize_url(og_img.get("content"), url)
+            if img_url and not is_bad_image_url(img_url): return img_url
+            
+        article = soup.select_one('article') or soup.select_one('.article-body') or soup.select_one('.news-text') or soup.select_one('.entry-content')
+        if article:
+            for img in article.find_all('img'):
+                src = img.get('src') or img.get('data-src') or img.get('data-original')
+                if not src or src.startswith('data:'): continue
+                img_url = normalize_url(src, url)
+                if img_url and not is_bad_image_url(img_url):
+                    return img_url
+    except Exception as e: 
+        pass
+    return None
+
 def get_nk_priority(text):
     text_lower = text.lower()
     if "новокузнецк" in text_lower: return 1
@@ -351,7 +362,6 @@ def get_nk_priority(text):
     if any(city in text_lower for city in NK_KEYWORDS[2:]): return 3
     return 99
 
-# НОВАЯ ФУНКЦИЯ ДЛЯ СКАЧИВАНИЯ ПОЛНОГО ТЕКСТА С САЙТА
 def fetch_full_text(url):
     try:
         resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=REQUEST_TIMEOUT, verify=False)
@@ -371,10 +381,14 @@ def get_tg_web_videos(channel_name, now):
     url = f"https://t.me/s/{channel_name}"
     try:
         resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
-        if resp.status_code != 200: return []
+        if resp.status_code != 200: 
+            print(f"  [{channel_name}] HTTP {resp.status_code}")
+            return []
         soup = BeautifulSoup(resp.text, "html.parser")
         posts = soup.select(".tgme_widget_message[data-post]")
-        if not posts: return []
+        if not posts: 
+            print(f"  [{channel_name}] Постов не найдено")
+            return []
         
         for post in reversed(posts):
             tt = post.select_one(".tgme_widget_message_date time")
@@ -401,7 +415,6 @@ def get_tg_web_videos(channel_name, now):
             
             clean = txt.get_text("\n", strip=True)
             
-            # ФИКС: Если текст короткий и есть ссылка на сайт, забираем полный текст
             if len(clean) < 200:
                 links = txt.find_all('a', href=True)
                 for l in links:
@@ -419,7 +432,6 @@ def get_tg_web_videos(channel_name, now):
             
             th = get_text_hash(clean)
             pid = post.get("data-post", "")
-            
             temp_title = clean[:80].strip()
                 
             videos.append({
@@ -436,10 +448,14 @@ def get_tg_web_photos(channel_name, now):
     url = f"https://t.me/s/{channel_name}"
     try:
         resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
-        if resp.status_code != 200: return []
+        if resp.status_code != 200: 
+            print(f"  [{channel_name}] HTTP {resp.status_code}")
+            return []
         soup = BeautifulSoup(resp.text, "html.parser")
         posts = soup.select(".tgme_widget_message[data-post]")
-        if not posts: return []
+        if not posts: 
+            print(f"  [{channel_name}] Постов не найдено")
+            return []
         
         for post in reversed(posts):
             tt = post.select_one(".tgme_widget_message_date time")
@@ -465,7 +481,6 @@ def get_tg_web_photos(channel_name, now):
             
             clean = txt.get_text("\n", strip=True)
             
-            # ФИКС: Если текст короткий и есть ссылка на сайт, забираем полный текст
             if len(clean) < 200:
                 links = txt.find_all('a', href=True)
                 for l in links:
@@ -483,7 +498,6 @@ def get_tg_web_photos(channel_name, now):
             
             th = get_text_hash(clean)
             pid = post.get("data-post", "")
-            
             temp_title = clean[:80].strip()
                 
             photos.append({
@@ -526,6 +540,87 @@ def get_novokuznetsk_tg_candidates(now):
             candidates.append(item)
             
     print(f"  Собрано кандидатов из TG: {len(candidates)}")
+    return candidates
+
+# ВОССТАНОВЛЕННЫЙ РЕЗЕРВНЫЙ СБОР ИЗ RSS
+def get_novokuznetsk_rss_candidates(now):
+    posted_hashes = get_posted_nk_hashes()
+    posted_photos = get_posted_nk_photos()
+    candidates = []
+    print("\n--- Сбор новостей Новокузнецка из RSS (Резерв) ---")
+    
+    for feed_url in NK_RSS_FEEDS:
+        try:
+            resp = requests.get(feed_url, timeout=REQUEST_TIMEOUT, verify=False, headers={'User-Agent': 'Mozilla/5.0'})
+            feed = feedparser.parse(resp.content)
+            if not feed.entries: continue
+                
+            for entry in feed.entries:
+                title = entry.get('title', '')
+                summary = entry.get('summary', '') or entry.get('description', '')
+                full_text = f"{title} {summary}"
+                if not any(k in full_text.lower() for k in NK_KEYWORDS): continue
+                
+                pub_date = now
+                if 'published_parsed' in entry: pub_date = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                elif 'updated_parsed' in entry: pub_date = datetime(*entry.updated_parsed[:6], tzinfo=timezone.utc)
+                age_hours = (now - pub_date).total_seconds() / 3600
+                if age_hours > 24: continue
+                
+                media_url = None
+                media_type = None
+                link = entry.get('link', '')
+
+                for m in entry.get('media_content', []):
+                    if m.get('type', '').startswith('video'):
+                        u = normalize_url(m.get('url'), link)
+                        if u: media_url = u; media_type = 'video'; break
+
+                if not media_url:
+                    for m in entry.get('media_content', []):
+                        if m.get('type', '').startswith('image'):
+                            u = normalize_url(m.get('url'), link)
+                            if u and not is_bad_image_url(u): media_url = u; media_type = 'photo'; break
+                if not media_url:
+                    for m in entry.get('media_thumbnail', []):
+                        u = normalize_url(m.get('url'), link)
+                        if u and not is_bad_image_url(u): media_url = u; media_type = 'photo'; break
+                if not media_url and summary:
+                    soup = BeautifulSoup(summary, 'html.parser')
+                    for img in soup.find_all('img'):
+                        src = img.get('src', '')
+                        parent_a = img.find_parent('a')
+                        href = parent_a.get('href', '') if parent_a else ''
+                        u = normalize_url(src, link)
+                        if u and not is_bad_image_url(u) and not is_bad_image_url(href):
+                            media_url = u
+                            media_type = 'photo'
+                            break
+                if not media_url and link:
+                    media_url = extract_image_from_url(link)
+                    if media_url:
+                        media_type = 'photo'
+
+                if not media_url: continue
+                if media_url in posted_photos: continue
+                    
+                clean_text = BeautifulSoup(summary, 'html.parser').get_text(separator='\n', strip=True)
+                clean_text = clean_text_junk(clean_text)
+                
+                if len(clean_text) < 20: continue
+                th = get_text_hash(clean_text)
+                if is_duplicate_text(clean_text, posted_hashes): continue
+                if is_ad(clean_text): continue
+                    
+                candidates.append({
+                    'title': title, 'summary': clean_text, 'age_hours': age_hours,
+                    'media_type': media_type, 'media_url': media_url,
+                    'link': link, 'text_hash': th, 'channel': 'rss',
+                    'priority': get_nk_priority(full_text),
+                    'source_priority': 1 if "novokuznetsk-news" in feed_url else 0
+                })
+        except Exception as e:
+            pass
     return candidates
 
 def send_video_tg(video_url, caption, chat_id, is_nk=False):
@@ -664,7 +759,7 @@ def send_to_max(text, media_type, media_url, channel_id=None, signature=None, ti
 def make_hybrid_post(title, summary):
     text = summary.strip()
     
-    # 1. Если есть новая строка (заголовок отделен)
+    # Если в тексте уже есть заголовок с новой строки
     parts = text.split('\n', 1)
     if len(parts) == 2:
         potential_title = parts[0].strip()
@@ -673,10 +768,9 @@ def make_hybrid_post(title, summary):
             last_word = potential_title.split()[-1].lower() if potential_title.split() else ""
             if last_word not in ['и', 'в', 'на', 'с', 'по', 'к', 'из', 'от', 'до', 'у', 'о', 'об', 'за', 'для', 'при']:
                 return f"<b>{potential_title}</b>\n\n{body}"
-        # Если нет заголовка, но есть новая строка:
         return f"<b>{potential_title}</b> {body}"
 
-    # 2. Если нет новой строки, ищем первое предложение
+    # Ищем первое предложение
     match = re.search(r'^([^.!?]+[.!?])\s*(.*)', text, re.DOTALL)
     if match:
         first_sentence = match.group(1).strip()
@@ -685,7 +779,7 @@ def make_hybrid_post(title, summary):
             return f"<b>{first_sentence}</b> {rest}"
         return f"<b>{first_sentence}</b>"
         
-    # 3. Если точек нет, ищем двоеточие
+    # Если точек нет, ищем двоеточие
     match = re.search(r'^([^:–—-]+[:–—-])\s*(.*)', text, re.DOTALL)
     if match:
         first = match.group(1).strip()
@@ -694,7 +788,6 @@ def make_hybrid_post(title, summary):
             return f"<b>{first}</b> {rest}"
         return f"<b>{first}</b>"
 
-    # 4. Если вообще нет знаков препинания, НЕ ДЕЛАЕМ ТЕКСТ ЖИРНЫМ
     return text
 
 def process_novokuznetsk():
@@ -705,11 +798,16 @@ def process_novokuznetsk():
     
     nk_candidates = get_novokuznetsk_tg_candidates(now)
     
+    # РЕЗЕРВНЫЙ ВАРИАНТ: Если TG пуст, идем в RSS
+    if not nk_candidates:
+        print("Резервный сбор из RSS Новокузнецка...")
+        nk_candidates = get_novokuznetsk_rss_candidates(now)
+    
     if not nk_candidates:
         print("Новокузнецк: после фильтрации ничего не осталось.")
         return
         
-    nk_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['priority'], x['age_hours']))
+    nk_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['priority'], x.get('source_priority', 0), x['age_hours']))
     
     seen = set()
     unique_nk = []
@@ -750,7 +848,7 @@ def main():
         all_photos.extend(get_tg_web_photos(ch, now))
     print(f"Собрано: {len(all_videos)} видео, {len(all_photos)} фото.")
 
-    print(">>> Обработка Новокузнецка (только Telegram)...")
+    print(">>> Обработка Новокузнецка...")
     process_novokuznetsk()
 
     print(">>> Обработка основного канала...")
