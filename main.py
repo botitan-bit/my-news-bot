@@ -5,10 +5,13 @@ import requests
 import re
 import html
 import time
+import io
 import urllib3
+import hashlib
+import traceback
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from PIL import Image, ImageStat
 import pytesseract
 from io import BytesIO
@@ -17,7 +20,7 @@ sys.stdout.reconfigure(line_buffering=True)
 print = functools.partial(print, flush=True)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-print("=== БОТ ОСНОВНОГО КАНАЛА ЗАПУСТИЛСЯ ===")
+print("=== БОТ ЗАПУСТИЛСЯ ===")
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID", "").strip()
@@ -46,25 +49,52 @@ AD_WORDS = [
 IMG_AD_PHRASES = ["8-800", "8 800", "ооо", "реклама", "заказать", "erid", "промокод", "скидка", "змппсм", "агротрак", "подпишись", "подписаться"]
 
 def ensure_state_files_exist():
-    for file in ["posted_news.txt", "published_titles.txt", "posted_images.txt", "posted_videos.txt", "posted_hashes.txt"]:
+    for file in [
+        "posted_news.txt", "published_titles.txt",
+        "posted_images.txt", "posted_videos.txt", "posted_hashes.txt"
+    ]:
         if not os.path.exists(file):
             open(file, 'a').close()
 
 def clean_text_junk(text):
     if not text: return ""
     text = html.unescape(text)
+    
     text = re.sub(r'(?i)\b(?:https?://|www\.)\S+', ' ', text)
     text = re.sub(r'(?i)\b[a-z0-9_-]+\.(?:ru|com|net|org|info|su|io|me|tv|biz|pro|рф)(?:/\S*)?\b', ' ', text)
     text = re.sub(r'@\w+', ' ', text)
     text = re.sub(r'<[^>]+>', ' ', text)
-    text = re.split(r'\|\s*(?=.*?(?:MAX|МАКС|TG|ТГ|Телеграм|Telegram|@|ВК|RUTUBE|ОК|rutube))', text, flags=re.IGNORECASE)[0]
     
-    patterns = [r'\b(подписаться|подписывайтесь|подпишись)\b', r'📣?\s*прямой\s+эфир', r'🔴?\s*прямой\s+эфир', r'💰\s*деньги\s+в\s+эфире', r'📺\s*наш\s+max', r'наш\s+max', r'😊\s*tg\s+замедляют', r'видосы\s+и\s+оперативные\s+новости', r'смотри\s+в\s+нашем', r'смотрите\s+в\s+нашем', r'смотрите\s+здесь', r'переходите\s+в\s+наш', r'переходи\s+в\s+наш', r'все\s+самое\s+важное', r'больше\s+новостей\s+на', r'читайте\s+также', r'источник\s*:', r'наши\s+соцсети']
+    text = re.split(r'\|\s*(?=.*?(?:MAX|МАКС|TG|ТГ|Телеграм|Telegram|@|ВК|RUTUBE|ОК|rutube))', text, flags=re.IGNORECASE)[0]
+    patterns = [
+        r'\b(подписаться|подписывайтесь|подпишись)\b',
+        r'📣?\s*прямой\s+эфир',
+        r'🔴?\s*прямой\s+эфир',
+        r'💰\s*деньги\s+в\s+эфире',
+        r'📺\s*наш\s+max',
+        r'наш\s+max',
+        r'😊\s*tg\s+замедляют',
+        r'видосы\s+и\s+оперативные\s+новости',
+        r'смотри\s+в\s+нашем',
+        r'смотрите\s+в\s+нашем',
+        r'смотрите\s+здесь',
+        r'переходите\s+в\s+наш',
+        r'переходи\s+в\s+наш',
+        r'все\s+самое\s+важное',
+        r'больше\s+новостей\s+на',
+        r'читайте\s+также',
+        r'источник\s*:',
+        r'наши\s+соцсети',
+    ]
     for p in patterns:
         text = re.split(r'(?i)' + p, text)[0]
         
     text = re.sub(r'[\U00010000-\U0010ffff]', '', text)
     text = re.sub(r'[\u2600-\u27BF]', '', text)
+    
+    # ФИКС: Убираем случайные пробелы перед знаками препинания
+    text = re.sub(r'\s+([.,;:!?])', r'\1', text)
+    
     text = re.sub(r'[ \t]+', ' ', text)
     text = re.sub(r'\n\s*\n', '\n\n', text)
     text = text.strip()
@@ -75,13 +105,17 @@ def clean_text_junk(text):
         if not last_line:
             lines.pop()
             continue
+        
         lower = last_line.lower()
+        
         if len(lower) < 60 and any(k in lower for k in ['max', 'мах', 'tg', 'тг', 'телеграм', 'telegram', 'подпишись', 'газета', 'rutube', 'вк', 'vk', 'ок', 'кайло']):
             lines.pop()
             continue
+            
         if len(lower) < 50 and lower.endswith(' в'):
             lines.pop()
             continue
+            
         break
         
     text = '\n'.join(lines).strip()
@@ -396,20 +430,42 @@ def send_to_max(text, media_type, media_url, title=""):
 
 def make_hybrid_post(title, summary):
     text = summary.strip()
+    
+    # 1. Проверяем, совпадает ли переданный title с началом текста
+    if title and text.startswith(title):
+        body = text[len(title):].strip()
+        # Если body начинается с точки, запятой и т.д., приклеиваем её к заголовку
+        if body and body[0] in '.,;:!?':
+            title += body[0]
+            body = body[1:].strip()
+        if body:
+            return f"<b>{title}</b>\n\n{body}"
+        return f"<b>{title}</b>"
+
+    # 2. Если переданный title не подошел, ищем по переносу строки
     parts = text.split('\n', 1)
     if len(parts) == 2:
         potential_title = parts[0].strip()
         body = parts[1].strip()
+        
+        # ФИКС: Если body начинается с точки или запятой, приклеиваем её к заголовку
+        if body and body[0] in '.,;:!?':
+            potential_title += body[0]
+            body = body[1:].strip()
+            
         if len(potential_title) < 150 and body:
-            if potential_title.split()[-1].lower() not in ['и', 'в', 'на', 'с', 'по', 'к', 'из', 'от', 'до', 'у', 'о', 'об', 'за', 'для', 'при']:
+            last_word = potential_title.split()[-1].lower() if potential_title.split() else ""
+            if last_word not in ['и', 'в', 'на', 'с', 'по', 'к', 'из', 'от', 'до', 'у', 'о', 'об', 'за', 'для', 'при']:
                 return f"<b>{potential_title}</b>\n\n{body}"
         return f"<b>{potential_title}</b> {body}"
 
+    # 3. Ищем первое предложение
     match = re.search(r'^([^.!?]+[.!?])\s*(.*)', text, re.DOTALL)
     if match:
         first, rest = match.group(1).strip(), match.group(2).strip()
         return f"<b>{first}</b> {rest}" if rest else f"<b>{first}</b>"
         
+    # 4. Ищем двоеточие или тире
     match = re.search(r'^([^:–—-]+[:–—-])\s*(.*)', text, re.DOTALL)
     if match:
         first, rest = match.group(1).strip(), match.group(2).strip()
