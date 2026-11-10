@@ -34,6 +34,7 @@ SIGNATURE_MAX = '**[ПЕРВЫЕ НОВОСТИ](https://max.ru/channel_pervonov
 
 TG_CHANNELS = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi", "zhest_na_dorogah"]
 
+# ДОБАВЛЕНЫ ОПЕРАТОРЫ СВЯЗИ
 AD_WORDS = [
     "реклама", "промокод", "скидка", "erid", "маркировка",
     "казино", "ставки", "криптовалюта", "инвестиции", "заработок",
@@ -43,10 +44,12 @@ AD_WORDS = [
     "заказать", "купить", "магазин", "акция", "промо", "розыгрыш",
     "партнерство", "партнёрство", "альянс", "кэшбэк", "кэшбек", "депозит", "привилегии",
     "альфа", "альфа-банк", "альфа банк", "сбер", "сбербанк", "тинькофф", "т-банк", "втб", "росбанк", "банк", "кредит", "ипотека",
-    "смотрите здесь", "rutube", "радио", "трансляция", "бочарик"
+    "смотрите здесь", "rutube", "радио", "трансляция", "бочарик",
+    "тариф", "тарифы", "абонент", "абонентам", "оператор", "связи", "гигабайт", "гигабайты", "минуты", "смс", 
+    "т2", "теле2", "мтс", "билайн", "мегафон"
 ]
 
-IMG_AD_PHRASES = ["8-800", "8 800", "ооо", "реклама", "заказать", "erid", "промокод", "скидка", "змппсм", "агротрак", "подпишись", "подписаться"]
+IMG_AD_PHRASES = ["8-800", "8 800", "ооо", "реклама", "заказать", "erid", "промокод", "скидка", "змппсм", "агротрак", "подпишись", "подписаться", "т2", "тариф"]
 
 def ensure_state_files_exist():
     for file in [
@@ -201,7 +204,9 @@ def is_ad(text):
     if re.search(r'\b\d{2}:\d{2}\b', lower) and any(w in lower for w in ['радио', 'эфир', 'трансляция', 'спутник']):
         return True
     for w in AD_WORDS:
-        if re.search(r'(?<![а-яёa-z])' + re.escape(w) + r'(?![а-яёa-z])', lower): return True
+        if re.search(r'(?<![а-яёa-z])' + re.escape(w) + r'(?![а-яёa-z])', lower): 
+            print(f"    [Найдена реклама: '{w}']")
+            return True
     return False
 
 def extract_direct_video_url(url):
@@ -286,7 +291,6 @@ def get_tg_web_videos(channel_name, now):
                 clean = "Видео с места событий"
                 
             if is_ad(clean): 
-                print(f"    [{channel_name}] Отклонено (реклама): {clean[:30]}...")
                 continue
             
             videos.append({
@@ -295,7 +299,7 @@ def get_tg_web_videos(channel_name, now):
                 "link": f"https://t.me/{post.get('data-post', '')}", "text_hash": get_text_hash(clean), "channel": channel_name
             })
     except Exception as e:
-        print(f"  ❌ Ошибка видео в {channel_name}: {e}")
+        pass
     return videos
 
 def get_tg_web_photos(channel_name, now):
@@ -349,23 +353,18 @@ def get_tg_web_photos(channel_name, now):
                 "link": f"https://t.me/{post.get('data-post', '')}", "text_hash": get_text_hash(clean), "channel": channel_name
             })
     except Exception as e:
-        print(f"  ❌ Ошибка фото в {channel_name}: {e}")
+        pass
     return photos
 
 def send_video_tg(video_url, caption, chat_id):
     direct_url = extract_direct_video_url(video_url)
-    if not direct_url: 
-        print("    [Ошибка] Не удалось извлечь прямую ссылку на видео")
-        return False
+    if not direct_url: return False
     try:
         resp = requests.get(direct_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60, verify=False)
-        if resp.status_code != 200: 
-            return False
+        if resp.status_code != 200: return False
             
         size_mb = len(resp.content) / (1024 * 1024)
-        if size_mb > 50:
-            print(f"    [Ошибка] Видео слишком большое: {size_mb:.1f} МБ (лимит 50 МБ)")
-            return False
+        if size_mb > 50: return False
             
         r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo", 
                           data={"chat_id": chat_id, "caption": caption, "parse_mode": "HTML", "supports_streaming": True}, 
@@ -373,10 +372,7 @@ def send_video_tg(video_url, caption, chat_id):
         if r.status_code == 200:
             save_posted_video(video_url)
             return True
-        else:
-            print(f"    [Ошибка TG] {r.json()}")
-    except Exception as e:
-        print(f"    [Ошибка отправки видео] {e}")
+    except: pass
     return False
 
 def send_photo_tg(photo_url, caption, chat_id, title=""):
@@ -460,17 +456,21 @@ def send_to_max(text, media_type, media_url, title=""):
 def make_hybrid_post(title, summary):
     text = summary.strip()
     
-    # 1. Пытаемся разделить по первой новой строке (самый надежный вариант для ТГ)
+    # 1. Пытаемся разделить по первой новой строке
     parts = text.split('\n', 1)
     if len(parts) == 2:
         potential_title = parts[0].strip()
         body = parts[1].strip()
         
-        # Если body начинается с точки или запятой, приклеиваем её к заголовку
-        if body and body[0] in '.,;:!?':
-            potential_title += body[0]
-            body = body[1:].strip()
-            
+        # Если заголовок обрывается на запятую, тире или двоеточие — склеиваем со следующим предложением!
+        if potential_title.endswith((',', '-', '—', ':')):
+            next_sentence_match = re.match(r'^([^.!?]+[.!?])\s*(.*)', body, re.DOTALL)
+            if next_sentence_match:
+                continuation = next_sentence_match.group(1).strip()
+                rest = next_sentence_match.group(2).strip()
+                potential_title = f"{potential_title} {continuation}"
+                body = rest
+                
         if len(potential_title) < 150 and body:
             last_word = potential_title.split()[-1].lower() if potential_title.split() else ""
             if last_word not in ['и', 'в', 'на', 'с', 'по', 'к', 'из', 'от', 'до', 'у', 'о', 'об', 'за', 'для', 'при']:
@@ -487,7 +487,7 @@ def make_hybrid_post(title, summary):
             return f"<b>{title}</b>\n\n{body}"
         return f"<b>{title}</b>"
 
-    # 3. Если ничего не совпало, ищем первое предложение
+    # 3. Поиск первого предложения
     match = re.search(r'^([^.!?]+[.!?])\s*(.*)', text, re.DOTALL)
     if match:
         first, rest = match.group(1).strip(), match.group(2).strip()
