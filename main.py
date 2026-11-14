@@ -34,7 +34,6 @@ SIGNATURE_MAX = '**[ПЕРВЫЕ НОВОСТИ](https://max.ru/channel_pervonov
 
 TG_CHANNELS = ["novosti_efir", "slavaded1337", "botcharov", "mnogonazi", "zhest_na_dorogah"]
 
-# ДОБАВЛЕНЫ ОПЕРАТОРЫ СВЯЗИ
 AD_WORDS = [
     "реклама", "промокод", "скидка", "erid", "маркировка",
     "казино", "ставки", "криптовалюта", "инвестиции", "заработок",
@@ -54,7 +53,7 @@ IMG_AD_PHRASES = ["8-800", "8 800", "ооо", "реклама", "заказат�
 def ensure_state_files_exist():
     for file in [
         "posted_news.txt", "published_titles.txt",
-        "posted_images.txt", "posted_videos.txt", "posted_hashes.txt"
+        "posted_images.txt", "posted_videos.txt", "posted_hashes.txt", "last_channel.txt"
     ]:
         if not os.path.exists(file):
             open(file, 'a').close()
@@ -63,73 +62,43 @@ def clean_text_junk(text):
     if not text: return ""
     text = html.unescape(text)
     
+    # Удаляем ссылки, хэштеги, домены
     text = re.sub(r'(?i)\b(?:https?://|www\.)\S+', ' ', text)
     text = re.sub(r'(?i)\b[a-z0-9_-]+\.(?:ru|com|net|org|info|su|io|me|tv|biz|pro|рф)(?:/\S*)?\b', ' ', text)
     text = re.sub(r'#\w+', ' ', text)
     text = re.sub(r'@\w+', ' ', text)
     text = re.sub(r'<[^>]+>', ' ', text)
     
-    text = re.split(r'\|\s*(?=.*?(?:MAX|МАКС|TG|ТГ|Телеграм|Telegram|@|ВК|RUTUBE|ОК|rutube))', text, flags=re.IGNORECASE)[0]
-    patterns = [
-        r'\b(подписаться|подписывайтесь|подпишись)\b',
-        r'📣?\s*прямой\s+эфир',
-        r'🔴?\s*прямой\s+эфир',
-        r'💰\s*деньги\s+в\s+эфире',
-        r'📺\s*наш\s+max',
-        r'наш\s+max',
-        r'😊\s*tg\s+замедляют',
-        r'видосы\s+и\s+оперативные\s+новости',
-        r'смотри\s+в\s+нашем',
-        r'смотрите\s+в\s+нашем',
-        r'смотрите\s+здесь',
-        r'переходите\s+в\s+наш',
-        r'переходи\s+в\s+наш',
-        r'все\s+самое\s+важное',
-        r'больше\s+новостей\s+на',
-        r'читайте\s+также',
-        r'источник\s*:',
-        r'наши\s+соцсети',
-    ]
-    for p in patterns:
-        text = re.split(r'(?i)' + p, text)[0]
-        
+    # Отрезаем рекламу
+    text = re.sub(r'(?i)\b(подписаться|подписывайтесь|подпишись)\b.*', '', text)
+    text = re.sub(r'\|\s*(?=.*?(?:MAX|МАКС|TG|ТГ|Телеграм|Telegram|@|ВК|RUTUBE|ОК|rutube)).*', '', text, flags=re.IGNORECASE)
+    
+    # Убираем эмодзи
     text = re.sub(r'[\U00010000-\U0010ffff]', '', text)
     text = re.sub(r'[\u2600-\u27BF]', '', text)
-    text = re.sub(r'\s+([.,;:!?])', r'\1', text)
     
+    # ФИКС: Склеиваем строки, если знак препинания перенесся на новую строку
+    text = re.sub(r'\n([.,;:!?»"”])', r'\1', text)
+    text = re.sub(r',\s*\n\s*', ', ', text) # Запятая и перенос - склеиваем
+    
+    text = re.sub(r'\s+([.,;:!?])', r'\1', text)
     text = re.sub(r'[ \t]+', ' ', text)
     text = re.sub(r'\n\s*\n', '\n\n', text)
     text = text.strip()
 
+    # Безопасное удаление хвостов (МАХ, ТГ и т.д.)
     lines = text.split('\n')
     while lines:
-        last_line = lines[-1].strip()
+        last_line = lines[-1].strip().lower()
         if not last_line:
             lines.pop()
             continue
-        
-        lower = last_line.lower()
-        
-        if len(lower) < 60 and any(k in lower for k in ['max', 'мах', 'tg', 'тг', 'телеграм', 'telegram', 'подпишись', 'газета', 'rutube', 'вк', 'vk', 'ок', 'кайло']):
+        if len(last_line) < 50 and any(k in last_line for k in ['max', 'мах', 'tg', 'тг', 'телеграм', 'telegram', 'подпишись', 'газета', 'rutube', 'вк', 'vk', 'ок', 'кайло', 'прямой эфир']):
             lines.pop()
             continue
-            
-        if len(lower) < 50 and lower.endswith(' в'):
-            lines.pop()
-            continue
-            
         break
         
-    text = '\n'.join(lines).strip()
-    text = re.sub(r'^[\.\,\-\:\s\|]+', '', text)
-    text = re.sub(r'[\.\,\-\:\s\|]+$', '', text)
-    return text
-
-def normalize_url(url, base=""):
-    if not url: return None
-    if url.startswith('//'): return 'https:' + url
-    if not url.startswith('http'): return urljoin(base, url)
-    return url
+    return '\n'.join(lines).strip()
 
 def is_bad_image(image_bytes, title_text=""):
     try:
@@ -199,13 +168,16 @@ def save_published_title(t):
         with open("published_titles.txt", "w", encoding="utf-8") as f:
             f.write("\n".join(titles[-50:]) + "\n")
 
+def save_last_channel(ch):
+    with open("last_channel.txt", "w", encoding="utf-8") as f:
+        f.write(ch + "\n")
+
 def is_ad(text):
     lower = text.lower()
     if re.search(r'\b\d{2}:\d{2}\b', lower) and any(w in lower for w in ['радио', 'эфир', 'трансляция', 'спутник']):
         return True
     for w in AD_WORDS:
         if re.search(r'(?<![а-яёa-z])' + re.escape(w) + r'(?![а-яёa-z])', lower): 
-            print(f"    [Найдена реклама: '{w}']")
             return True
     return False
 
@@ -249,10 +221,7 @@ def get_tg_web_videos(channel_name, now):
         if resp.status_code != 200: return []
         soup = BeautifulSoup(resp.text, "html.parser")
         
-        posts = soup.select(".tgme_widget_message[data-post]")
-        print(f"  [{channel_name}] Найдено постов: {len(posts)}")
-        
-        for post in reversed(posts):
+        for post in reversed(soup.select(".tgme_widget_message[data-post]")):
             tt = post.select_one(".tgme_widget_message_date time")
             if not tt: continue
             try: pub = datetime.fromisoformat(tt.get("datetime").replace("Z", "+00:00"))
@@ -290,16 +259,14 @@ def get_tg_web_videos(channel_name, now):
             if not clean or len(clean) < 2:
                 clean = "Видео с места событий"
                 
-            if is_ad(clean): 
-                continue
+            if is_ad(clean): continue
             
             videos.append({
                 "title": original_title, "summary": clean, "age_hours": age,
                 "media_type": "video", "media_url": v_url,
                 "link": f"https://t.me/{post.get('data-post', '')}", "text_hash": get_text_hash(clean), "channel": channel_name
             })
-    except Exception as e:
-        pass
+    except: pass
     return videos
 
 def get_tg_web_photos(channel_name, now):
@@ -308,6 +275,7 @@ def get_tg_web_photos(channel_name, now):
         resp = requests.get(f"https://t.me/s/{channel_name}", timeout=REQUEST_TIMEOUT, headers={'User-Agent': 'Mozilla/5.0'}, verify=False)
         if resp.status_code != 200: return []
         soup = BeautifulSoup(resp.text, "html.parser")
+        
         for post in reversed(soup.select(".tgme_widget_message[data-post]")):
             tt = post.select_one(".tgme_widget_message_date time")
             if not tt: continue
@@ -342,9 +310,7 @@ def get_tg_web_photos(channel_name, now):
                             
             clean = clean_text_junk(clean)
             
-            if not clean or len(clean) < 10: 
-                continue
-                
+            if not clean or len(clean) < 10: continue
             if is_ad(clean): continue
             
             photos.append({
@@ -352,19 +318,24 @@ def get_tg_web_photos(channel_name, now):
                 "media_type": "photo", "media_url": p_url,
                 "link": f"https://t.me/{post.get('data-post', '')}", "text_hash": get_text_hash(clean), "channel": channel_name
             })
-    except Exception as e:
-        pass
+    except: pass
     return photos
 
 def send_video_tg(video_url, caption, chat_id):
     direct_url = extract_direct_video_url(video_url)
     if not direct_url: return False
     try:
+        # Проверяем размер до скачивания
+        head_resp = requests.head(direct_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15, verify=False)
+        if head_resp.status_code == 200:
+            cl = int(head_resp.headers.get('Content-Length', 0))
+            if cl > 50 * 1024 * 1024:
+                print(f"    [Отклонено] Видео > 50 МБ ({cl / (1024*1024):.1f} МБ)")
+                return False
+                
         resp = requests.get(direct_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=60, verify=False)
         if resp.status_code != 200: return False
-            
-        size_mb = len(resp.content) / (1024 * 1024)
-        if size_mb > 50: return False
+        if len(resp.content) > 50 * 1024 * 1024: return False
             
         r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo", 
                           data={"chat_id": chat_id, "caption": caption, "parse_mode": "HTML", "supports_streaming": True}, 
@@ -456,28 +427,7 @@ def send_to_max(text, media_type, media_url, title=""):
 def make_hybrid_post(title, summary):
     text = summary.strip()
     
-    # 1. Пытаемся разделить по первой новой строке
-    parts = text.split('\n', 1)
-    if len(parts) == 2:
-        potential_title = parts[0].strip()
-        body = parts[1].strip()
-        
-        # Если заголовок обрывается на запятую, тире или двоеточие — склеиваем со следующим предложением!
-        if potential_title.endswith((',', '-', '—', ':')):
-            next_sentence_match = re.match(r'^([^.!?]+[.!?])\s*(.*)', body, re.DOTALL)
-            if next_sentence_match:
-                continuation = next_sentence_match.group(1).strip()
-                rest = next_sentence_match.group(2).strip()
-                potential_title = f"{potential_title} {continuation}"
-                body = rest
-                
-        if len(potential_title) < 150 and body:
-            last_word = potential_title.split()[-1].lower() if potential_title.split() else ""
-            if last_word not in ['и', 'в', 'на', 'с', 'по', 'к', 'из', 'от', 'до', 'у', 'о', 'об', 'за', 'для', 'при']:
-                return f"<b>{potential_title}</b>\n\n{body}"
-        return f"<b>{potential_title}</b> {body}"
-
-    # 2. Если новой строки нет, но переданный title совпадает с началом
+    # ФИКС: Берем весь текст, разделяем только если есть четкий заголовок
     if title and text.startswith(title):
         body = text[len(title):].strip()
         if body and body[0] in '.,;:!?':
@@ -487,7 +437,23 @@ def make_hybrid_post(title, summary):
             return f"<b>{title}</b>\n\n{body}"
         return f"<b>{title}</b>"
 
-    # 3. Поиск первого предложения
+    # Если первой строкой идет заголовок, но она не закончена
+    parts = text.split('\n', 1)
+    if len(parts) == 2:
+        potential_title = parts[0].strip()
+        body = parts[1].strip()
+        
+        # Склеиваем со следующим предложением, если есть запятая или тире
+        if potential_title.endswith((',', '-', '—', ':')):
+            match = re.match(r'^([^.!?]+[.!?])\s*(.*)', body, re.DOTALL)
+            if match:
+                potential_title = f"{potential_title} {match.group(1).strip()}"
+                body = match.group(2).strip()
+                
+        if len(potential_title) < 150 and body:
+            return f"<b>{potential_title}</b>\n\n{body}"
+        return f"<b>{potential_title}</b> {body}"
+
     match = re.search(r'^([^.!?]+[.!?])\s*(.*)', text, re.DOTALL)
     if match:
         first, rest = match.group(1).strip(), match.group(2).strip()
@@ -510,26 +476,39 @@ def main():
         all_videos.extend(get_tg_web_videos(ch, now))
         all_photos.extend(get_tg_web_photos(ch, now))
 
-    print(f"Собрано: {len(all_videos)} видео, {len(all_photos)} фото.")
-
     main_candidates = all_videos + all_photos
-    main_candidates.sort(key=lambda x: (0 if x['media_type'] == 'video' else 1, x['age_hours']))
 
     posted_hashes, posted_photos_urls, posted_videos_urls = get_posted_hashes(), get_posted_photos(), get_posted_videos()
     recent_titles = get_recent_titles()
 
-    seen = set()
-    unique_main = []
+    # ФИКС: Группируем по каналам, чтобы обеспечить честную очередь
+    channel_pools = {ch: [] for ch in TG_CHANNELS}
     for c in main_candidates:
-        if c['text_hash'] in seen: continue
-        if c['media_type'] == 'photo' and c['media_url'] in posted_photos_urls: continue
-        if c['media_type'] == 'video' and c['media_url'] in posted_videos_urls: continue
-        if is_duplicate_text(c['summary'], posted_hashes) or is_duplicate_title(c['title'], recent_titles): continue
-        seen.add(c['text_hash'])
-        unique_main.append(c)
+        if c['channel'] in channel_pools:
+            if c['media_type'] == 'photo' and c['media_url'] in posted_photos_urls: continue
+            if c['media_type'] == 'video' and c['media_url'] in posted_videos_urls: continue
+            if is_duplicate_text(c['summary'], posted_hashes) or is_duplicate_title(c['title'], recent_titles): continue
+            channel_pools[c['channel']].append(c)
 
-    if unique_main:
-        for c in unique_main[:15]:
+    # Берем по 2 лучших кандидата с каждого канала
+    best_candidates = []
+    for ch, pool in channel_pools.items():
+        pool.sort(key=lambda x: x['age_hours'])
+        best_candidates.extend(pool[:2])
+        
+    # Узнаем, какой канал был прошлым
+    last_ch = ""
+    if os.path.exists("last_channel.txt"):
+        lines = load_lines("last_channel.txt")
+        if lines: last_ch = lines[-1]
+        
+    # Сортируем так, чтобы канал, который публиковался в прошлый раз, был в самом конце
+    best_candidates.sort(key=lambda x: (0 if x['channel'] != last_ch else 1, 0 if x['media_type'] == 'video' else 1))
+
+    print(f"Найдено кандидатов: {len(best_candidates)}")
+    
+    if best_candidates:
+        for c in best_candidates:
             print(f"\nКандидат: {c['title'][:50]}... ({c['media_type']}) из {c['channel']}")
             body = make_hybrid_post(c['title'], c['summary'])
             tg_ok = send_to_telegram(body, c['media_type'], c['media_url'], title=c['title'])
@@ -539,6 +518,7 @@ def main():
                 save_posted_link(c['link'])
                 save_published_title(c['title'])
                 save_posted_hash(c['text_hash'])
+                save_last_channel(c['channel']) # Запоминаем канал
                 send_to_max(body, c['media_type'], c['media_url'], title=c['title'])
                 print("\n🎉 Готово!")
                 return
